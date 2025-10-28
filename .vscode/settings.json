@@ -76,7 +76,8 @@
         "filesystem": "cpp",
         "chrono": "cpp",
         "forward_list": "cpp",
-        "ratio": "cpp"
+        "ratio": "cpp",
+        "functional": "cpp"
     },
     "C_Cpp.errorSquiggles": "disabled"
 }

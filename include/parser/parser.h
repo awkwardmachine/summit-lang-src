@@ -33,6 +33,7 @@ private:
     std::unique_ptr<Statement> functionDeclaration();
     std::unique_ptr<Statement> statement();
     std::unique_ptr<Statement> returnStatement();
+    std::unique_ptr<Statement> usingDeclaration();
     std::unique_ptr<Statement> expressionStatement();
 
     std::unique_ptr<Expression> expression();

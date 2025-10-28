@@ -415,8 +415,79 @@ void CodeGenerator::codegen(const Statement& stmt) {
         codegenReturn(*s);
     } else if (auto* s = dynamic_cast<const ExpressionStmt*>(&stmt)) {
         codegenExprStmt(*s);
+    } else if (auto* s = dynamic_cast<const UsingStmt*>(&stmt)) {
+        codegenUsingStmt(*s);
+    } else if (auto* s = dynamic_cast<const UsingImportStmt*>(&stmt)) {
+        codegenUsingImportStmt(*s);
     } else {
         throw std::runtime_error("Unknown statement type");
+    }
+}
+
+void CodeGenerator::importAllFunctionsFromModule(const std::string& module_path) {
+    for (const auto& [full_path, spec] : STDLIB_REGISTRY) {
+        if (full_path.find(module_path + ".") == 0) {
+            std::string func_name = full_path.substr(module_path.length() + 1);
+
+            llvm::Function* func = getOrDeclareStdlibFunction(full_path);
+            if (func) {
+                function_references_[func_name] = func;
+            }
+        }
+    }
+}
+
+void CodeGenerator::codegenUsingImportStmt(const UsingImportStmt& stmt) {
+    if (auto* import_expr = dynamic_cast<const ImportExpr*>(stmt.import_expr.get())) {
+        std::string module_path = import_expr->module;
+        ensureModuleExists(module_path);
+
+        importAllFunctionsFromModule(module_path);
+        
+    } else if (auto* named_import = dynamic_cast<const NamedImportExpr*>(stmt.import_expr.get())) {
+        ensureModuleExists(named_import->module);
+        
+        for (const auto& import_name : named_import->imports) {
+            std::string full_path = named_import->module + "." + import_name;
+            llvm::Function* func = getOrDeclareStdlibFunction(full_path);
+            
+            if (func) {
+                function_references_[import_name] = func;
+            } else {
+                std::cerr << "Warning: Function '" << import_name << "' not found in module '" 
+                          << named_import->module << "'" << std::endl;
+            }
+        }
+    } else if (auto* member_access = dynamic_cast<const MemberAccess*>(stmt.import_expr.get())) {
+        std::string full_path = extractFunctionPath(member_access);
+        
+        if (!full_path.empty()) {
+            importAllFunctionsFromModule(full_path);
+        } else {
+            throw std::runtime_error("Could not resolve module path for using statement");
+        }
+    } else {
+        throw std::runtime_error("Unsupported import expression in using statement");
+    }
+}
+
+void CodeGenerator::codegenUsingStmt(const UsingStmt& stmt) {
+    auto alias_it = module_aliases_.find(stmt.module_alias);
+    if (alias_it == module_aliases_.end()) {
+        throw std::runtime_error("Unknown module alias: " + stmt.module_alias);
+    }
+    
+    std::string module_path = alias_it->second;
+
+    for (const auto& [full_path, spec] : STDLIB_REGISTRY) {
+        if (full_path.find(module_path + ".") == 0) {
+            std::string func_name = full_path.substr(module_path.length() + 1);
+
+            llvm::Function* func = getOrDeclareStdlibFunction(full_path);
+            if (func) {
+                function_references_[func_name] = func;
+            }
+        }
     }
 }
 

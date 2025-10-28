@@ -1,0 +1,6 @@
+using @import("std.io")
+
+func main():
+    println("Hello, world!")
+    print("This also works!")
+end

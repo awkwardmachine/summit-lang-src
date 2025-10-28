@@ -62,11 +62,14 @@ private:
     llvm::Value* codegenBinaryOp(const BinaryOp& expr);
     llvm::Value* codegenImport(const ImportExpr& expr);
     llvm::Value* codegenNamedImport(const NamedImportExpr& expr);
+    void codegenUsingImportStmt(const UsingImportStmt& stmt);
+    void importAllFunctionsFromModule(const std::string& module_path);
     
     void codegenVarDecl(const VarDecl& stmt);
     void codegenFunctionDecl(const FunctionDecl& stmt);
     void codegenReturn(const ReturnStmt& stmt);
     void codegenExprStmt(const ExpressionStmt& stmt);
+    void codegenUsingStmt(const UsingStmt& stmt);
     
     llvm::Type* getInt64Type();
     llvm::Type* getDoubleType();

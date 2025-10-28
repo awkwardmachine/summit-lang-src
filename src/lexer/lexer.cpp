@@ -16,6 +16,7 @@ const std::unordered_map<std::string, TokenType> Lexer::keywords_ = {
     {"while", TokenType::WHILE},
     {"for", TokenType::FOR},
     {"from", TokenType::FROM},
+    {"using", TokenType::USING},
     
     {"i8", TokenType::I8},
     {"i16", TokenType::I16},

@@ -6,7 +6,7 @@ namespace Summit {
 
 enum class TokenType {
     // Keywords
-    CONST, VAR, FUNC, RET, END, IF, ELSE, WHILE, FOR, FROM,
+    CONST, VAR, FUNC, RET, END, IF, ELSE, WHILE, FOR, FROM, USING,
     
     // Type keywords
     I8, I16, I32, I64,

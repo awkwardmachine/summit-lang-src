@@ -86,7 +86,33 @@ std::unique_ptr<Statement> Parser::declaration() {
     if (match(TokenType::CONST)) return constDeclaration();
     if (match(TokenType::VAR)) return varDeclaration();
     if (match(TokenType::FUNC)) return functionDeclaration();
+    if (match(TokenType::USING)) return usingDeclaration();
     return statement();
+}
+
+std::unique_ptr<Statement> Parser::usingDeclaration() {
+    if (match(TokenType::AT)) {
+        auto import_expr = import();
+        
+        if (match(TokenType::DOT)) {
+            Token member = advance();
+            if (member.type != TokenType::IDENTIFIER) {
+                throw std::runtime_error("Expected member name after '.' at line " + std::to_string(member.line));
+            }
+            
+            auto member_access = std::make_unique<MemberAccess>(std::move(import_expr), member.lexeme);
+            return std::make_unique<UsingImportStmt>(std::move(member_access));
+        }
+
+        return std::make_unique<UsingImportStmt>(std::move(import_expr));
+    }
+
+    Token alias = advance();
+    if (alias.type != TokenType::IDENTIFIER) {
+        throw std::runtime_error("Expected module alias after 'using' at line " + std::to_string(alias.line));
+    }
+    
+    return std::make_unique<UsingStmt>(alias.lexeme);
 }
 
 std::unique_ptr<Statement> Parser::constDeclaration() {

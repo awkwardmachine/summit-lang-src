@@ -124,6 +124,18 @@ struct ExpressionStmt : Statement {
         : expression(std::move(expr)) {}
 };
 
+struct UsingStmt : public Statement {
+    std::string module_alias;
+    
+    UsingStmt(std::string alias) : module_alias(std::move(alias)) {}
+};
+
+struct UsingImportStmt : public Statement {
+    std::unique_ptr<Expression> import_expr;
+    
+    UsingImportStmt(std::unique_ptr<Expression> expr) : import_expr(std::move(expr)) {}
+};
+
 struct VarDecl : Statement {
     std::string name;
     std::optional<Type> type;

@@ -1,0 +1,41 @@
+// Named persistent import example
+//
+// The @import {...} from "module" syntax allows you to import
+// specific public members from a module and make them directly available
+// in the current scope.
+//
+// These imports are persistent, meaning the members remain accessible
+// for the entire scope of the file or module.
+//
+// Unlike ephemeral imports, the module itself is not imported as an object;
+// only the selected members are made available; in this case, "print" and "println".
+//
+// This approach reduces namespace clutter and allows concise access
+// to frequently used members without repeatedly referencing the full module path.
+//
+// However, all imported members are stored at compile time
+// whether they are used or not.
+
+@import {print, println} from "std.io" // Multiple member import
+
+func main():
+    // Directly call the imported member "println"
+    println("Hello with newline!")
+
+    // Directly call the imported member "print"
+    print("Hello without newline!")
+end
+
+// Single-member import alternative:
+//
+// You can also import just one member using:
+//     @import print from "std.io"
+//
+// This makes only the "print" function available in the current scope
+// without bringing in any other members.
+
+@import print from "std.io" // Single member import
+
+func example():
+    print("Hello using single-member import!")
+end

@@ -1,0 +1,25 @@
+func main():
+    // The @import expression performs a short lived (ephemeral) module import.
+    //
+    // It loads the specified module, and in this case, "std.io", but only for this expression.
+    // This works with any module path passed directly to @import.
+    //
+    // No variable is created, and the module reference is automatically discarded
+    // once the function call has finished executing.
+    //
+    // This keeps the import completely local to this statement
+    // and prevents it from affecting the surrounding scope.
+    @import("std.io").println("Hello, world!")
+
+    // Another example using nested access:
+    //
+    // Here, @import("std") loads the base standard library module,
+    // and then the expression accesses its "io" submodule before calling println().
+    //
+    // This is functionally equivalent to the previous example, but shows that
+    // you can access submodules dynamically after importing a parent module.
+    //
+    // Like before, this import exists only during the evaluation of this statement
+    // and goes out of scope immediately afterward.
+    @import("std").io.println("Hello, world!")
+end

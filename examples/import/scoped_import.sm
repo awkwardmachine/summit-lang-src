@@ -1,0 +1,35 @@
+// Persistent (scoped) module import example
+//
+// The @import expression loads the "std" module at compile time
+// and assigns it to the constant name "std".
+//
+// Unlike ephemeral imports, this reference persists for the entire
+// scope of the current file or module.
+//
+// You can alias the module to any name you like:
+//     const lib = @import("std")
+// Then use "lib.io.println(...)" instead of "std.io.println(...)".
+
+// Import the full standard library persistently
+const std = @import("std")
+
+func main():
+    // Access the "io" submodule and call println()
+    std.io.println("Hello, world!")
+
+    // Alias a submodule to a shorter name for convenience
+    const io = std.io
+    io.println("Hello again!")  // same as std.io.println
+
+    // Directly alias a function to a new name
+    const print = io.println
+    print("Hello using function alias!")  // same as io.println
+
+    // You can also alias using the full module path in one step
+    const println_fn = std.io.println
+    println_fn("Hello using full-path alias!")
+
+    // Finally, you can import a submodule directly if you only need it
+    const io_direct = @import("std.io")
+    io_direct.println("Hello using direct submodule import!")
+end

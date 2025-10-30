@@ -1,0 +1,102 @@
+// Mutable Variable Example
+//
+// The "var" keyword declares a mutable variable, a named, changeable value
+// stored in memory. Variables are used to hold data that may vary during runtime.
+//
+// Syntax:
+//     var <name>: <type> = <initial_value>
+//
+// The "<type>" annotation is optional because the compiler can infer the type
+// automatically from the value. Explicit typing is only necessary when you need
+// a specific precision or integer size.
+//
+// For example:
+//     var x = 10 // inferred as i32 by default
+//     var y: i64 = 10 // explicitly 64-bit integer
+//
+// Numeric Types Overview
+//
+// Signed integers ("i8", "i16", "i32", "i64") can represent both
+// positive and negative whole numbers.
+//
+// Unsigned integers ("u8", "u16", "u32", "u64") can only represent
+// non-negative values (zero and above), but can store larger positive
+// ranges using the same bit width.
+//
+// For example:
+//     i8  : -128 to 127
+//     u8  : 0 to 255
+//     i32 : -2,147,483,648 to 2,147,483,647
+//     u32 : 0 to 4,294,967,295
+//
+// Floating-point types ("f32", "f64") represent real numbers with
+// fractional parts and follow the IEEE-754 standard for 32-bit and 64-bit precision.
+//
+// Casting between integer and float types must be explicit to avoid ambiguity.
+// Example: "var f = i32_val as f32"
+//
+// Example Demonstration
+
+@import println from "std.io"
+
+func main():
+    // Signed integers
+    var i8_val: i8 = -12
+    var i16_val: i16 = -32000
+    var i32_val: i32 = -100000
+    var i64_val: i64 = -9000000000
+
+    println(i8_val)
+    println(i16_val)
+    println(i32_val)
+    println(i64_val)
+
+    // Unsigned integers (non-negative only)
+    var u8_val: u8 = 250
+    var u16_val: u16 = 65000
+    var u32_val: u32 = 4000000000
+    var u64_val: u64 = 180000000000000000
+
+    println(u8_val)
+    println(u16_val)
+    println(u32_val)
+    println(u64_val)
+
+    // Floating point types
+    var f32_val: f32 = 5.32
+    var f64_val: f64 = 3.1415926535
+
+    println(f32_val)
+    println(f64_val)
+
+    // Boolean type, represents logical true/false (1/0)
+    var active: bool = true
+    println(active)
+    active = false
+    println(active)
+
+    // String type, a sequence of characters
+    var message: string = "Hello, world!"
+    println(message)
+
+    // Type inference, explicit types are optional in most cases
+    var inferred_int = 42 // inferred as i32
+    var inferred_float = 2.5 // inferred as f64
+    var inferred_string = "Hi!" // inferred as string
+
+    println(inferred_int)
+    println(inferred_float)
+    println(inferred_string)
+
+    // Explicit type casting example
+    // (required when converting between integer and float types)
+    var number: i32 = 10
+    var precise: f32 = number as f32 // convert i32 to f32
+    println(precise)
+
+    // Mutability demonstration, vars can change during runtime
+    var counter: i32 = 0
+    println(counter)
+    counter = 10
+    println(counter)
+end

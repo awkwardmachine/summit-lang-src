@@ -34,7 +34,10 @@ end
 // Alternatively, you can import the submodule directly and use it with "using":
 using @import("std.io")
 
-func main_3():
+func main():
     println("Hello using direct inline submodule import!")
     print("All members of std.io are available directly!")
+
+    main_1()
+    main_2()
 end

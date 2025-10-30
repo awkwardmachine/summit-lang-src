@@ -8,6 +8,7 @@
 #include <memory>
 #include <unordered_map>
 #include <string>
+#include <unordered_set>
 
 #include "parser/ast.h"
 
@@ -17,7 +18,7 @@ class CodeGenerator {
 public:
     CodeGenerator();
     ~CodeGenerator();
-    
+
     void generate(const Program& program);
     void emitObjectFile(const std::string& filename);
     void emitExecutable(const std::string& filename, 
@@ -25,62 +26,90 @@ public:
                    bool no_stdlib = false);
     
 private:
+    // llvm infrastructure
     std::unique_ptr<llvm::LLVMContext> context_;
     std::unique_ptr<llvm::Module> module_;
     std::unique_ptr<llvm::IRBuilder<>> builder_;
     
+    // symbol tables and tracking
     std::unordered_map<std::string, llvm::Value*> named_values_;
     std::unordered_map<std::string, llvm::Function*> functions_;
     std::unordered_map<std::string, llvm::GlobalVariable*> globals_;
+    std::unordered_map<std::string, Type> variable_types_;
     
+    // module and import system
     struct ModuleInfo {
         std::unordered_map<std::string, llvm::Value*> members;
         std::unordered_map<std::string, llvm::Function*> functions;
     };
     std::unordered_map<std::string, ModuleInfo> modules_;
-    
+    std::unordered_map<std::string, std::string> module_aliases_;
+    std::unordered_map<std::string, llvm::Function*> function_references_;
     std::unordered_map<std::string, llvm::Function*> stdlib_functions_;
     
-    std::unordered_map<std::string, std::string> module_aliases_;
-    
-    std::unordered_map<std::string, llvm::Function*> function_references_;
+    // type tracking for functions
+    std::unordered_map<std::string, Type> function_return_types_;
+    std::unordered_map<llvm::Function*, Type> function_return_summit_types_;
+    std::unordered_set<std::string> inferred_unsigned_functions_;
 
+    // current compilation context
     llvm::Function* current_function_ = nullptr;
 
+    // module and stdlib helpers
     llvm::Function* getOrDeclareStdlibFunction(const std::string& full_path);
     void ensureModuleExists(const std::string& path);
     std::string extractFunctionPath(const Expression* expr);
+    void importAllFunctionsFromModule(const std::string& module_path);
 
+    // analysis passes
+    void analyzeFunctionCalls(const Program& program);
+    void analyzeFunctionCallsInExpr(const Expression& expr);
+    Type inferReturnType(const FunctionDecl& stmt);
+
+    // expression codegen
     llvm::Value* codegen(const Expression& expr);
-    void codegen(const Statement& stmt);
-
     llvm::Value* codegenNumberLiteral(const NumberLiteral& expr);
     llvm::Value* codegenStringLiteral(const StringLiteral& expr);
+    llvm::Value* codegenBooleanLiteral(const BooleanLiteral& expr);
     llvm::Value* codegenIdentifier(const Identifier& expr);
     llvm::Value* codegenMemberAccess(const MemberAccess& expr);
     llvm::Value* codegenFunctionCall(const FunctionCall& expr);
     llvm::Value* codegenBinaryOp(const BinaryOp& expr);
+    llvm::Value* codegenUnaryOp(const UnaryOp& expr);
+    llvm::Value* codegenCast(const CastExpr& expr);
+    llvm::Value* codegenAssignment(const AssignmentExpr& expr);
     llvm::Value* codegenImport(const ImportExpr& expr);
     llvm::Value* codegenNamedImport(const NamedImportExpr& expr);
-    void codegenUsingImportStmt(const UsingImportStmt& stmt);
-    void importAllFunctionsFromModule(const std::string& module_path);
     
+    // statement codegen
+    void codegen(const Statement& stmt);
     void codegenVarDecl(const VarDecl& stmt);
     void codegenFunctionDecl(const FunctionDecl& stmt);
     void codegenReturn(const ReturnStmt& stmt);
     void codegenExprStmt(const ExpressionStmt& stmt);
     void codegenUsingStmt(const UsingStmt& stmt);
+    void codegenUsingImportStmt(const UsingImportStmt& stmt);
     
+    // type system utilities
+    llvm::Type* getLLVMType(const Type& type);
+    Type getSummitTypeFromLLVMType(llvm::Type* type);
+    bool isIntegerType(const Type& type);
+    bool isSignedType(const Type& type);
+    std::string typeToString(const Type& type);
+    std::string getTypeString(llvm::Type* type);
+    
+    // type casting and conversion
+    llvm::Value* castValue(llvm::Value* value, llvm::Type* target_type, const Type& target_summit_type);
+    void promoteVariableType(const std::string& name, llvm::Value* new_value, const Type& new_summit_type);
+    bool isValueInRange(int64_t value, const Type& type);
+    bool isLargeValueInRange(const std::string& largeValue, const Type& type);
+    
+    // common type helpers
     llvm::Type* getInt64Type();
     llvm::Type* getDoubleType();
     llvm::Type* getVoidType();
     llvm::Type* getInt8PtrType();
     llvm::Function* getFunction(const std::string& name);
-
-    llvm::Type* getLLVMType(const Type& type);
-    bool isIntegerType(const Type& type);
-    bool isSignedType(const Type& type);
-    llvm::Value* castValue(llvm::Value* value, llvm::Type* target_type, const Type& target_summit_type);
 };
 
 }

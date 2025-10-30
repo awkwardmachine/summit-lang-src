@@ -3,13 +3,13 @@
 #include <sstream>
 #include <string>
 #include <vector>
-
+#include <filesystem>
 #include "lexer/lexer.h"
 #include "parser/parser.h"
 #include "codegen/codegen.h"
-
 #include <llvm/Support/Error.h>
 
+// file reading utility
 std::string readFile(const std::string& filename) {
     std::ifstream file(filename);
     if (!file.is_open()) {
@@ -21,13 +21,31 @@ std::string readFile(const std::string& filename) {
     return buffer.str();
 }
 
+// cli help message
 void printUsage(const char* program_name) {
     std::cerr << "Usage: " << program_name << " [options] <input.sm>\n";
     std::cerr << "Options:\n";
-    std::cerr << "  -o <output>    Output executable name (default: a.out)\n";
+    std::cerr << "  -o <output>    Output executable name\n";
     std::cerr << "  -c             Compile to object file only\n";
     std::cerr << "  -nostdlib      Do not link with standard library\n";
     std::cerr << "  -h, --help     Show this help message\n";
+}
+
+// figure out what to name the output if user didnt specify
+std::string getDefaultOutputName(const std::string& input_file, bool compile_only) {
+    std::filesystem::path input_path(input_file);
+    std::string stem = input_path.stem().string();
+    
+    if (compile_only) {
+        return stem + ".o";
+    }
+    
+    // windows needs .exe extension
+#ifdef _WIN32
+    return stem + ".exe";
+#else
+    return stem;
+#endif
 }
 
 int main(int argc, char** argv) {
@@ -36,11 +54,13 @@ int main(int argc, char** argv) {
         return 1;
     }
     
+    // parse command line args
     std::string input_file;
-    std::string output_file = "a.out";
+    std::string output_file;
+    bool output_specified = false;
     bool compile_only = false;
     bool no_stdlib = false;
-
+    
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
         
@@ -50,6 +70,7 @@ int main(int argc, char** argv) {
         } else if (arg == "-o") {
             if (i + 1 < argc) {
                 output_file = argv[++i];
+                output_specified = true;
             } else {
                 std::cerr << "Error: -o requires an argument\n";
                 return 1;
@@ -59,6 +80,7 @@ int main(int argc, char** argv) {
         } else if (arg == "-nostdlib") {
             no_stdlib = true;
         } else if (arg[0] != '-') {
+            // not a flag, must be the input file
             input_file = arg;
         } else {
             std::cerr << "Unknown option: " << arg << "\n";
@@ -72,9 +94,17 @@ int main(int argc, char** argv) {
         return 1;
     }
     
+    // set default output name if needed
+    if (!output_specified) {
+        output_file = getDefaultOutputName(input_file, compile_only);
+    }
+    
     try {
+        // read the source file
         std::string source = readFile(input_file);
         
+        // run through the compilation pipeline
+        // lexer -> parser -> codegen
         Summit::Lexer lexer(source);
         auto tokens = lexer.tokenize();
         
@@ -84,12 +114,15 @@ int main(int argc, char** argv) {
         Summit::CodeGenerator codegen;
         codegen.generate(*ast);
         
+        // emit either object file or executable
         if (compile_only) {
             codegen.emitObjectFile(output_file);
+            std::cout << "Object file created: " << output_file << std::endl;
         } else {
             std::vector<std::string> libs;
             if (!no_stdlib) {
-                libs.push_back("build/linux/x86_64/release/libsummit_std.a");;
+                // TODO: this path is kinda hardcoded, should probably be more flexible
+                libs.push_back("build/linux/x86_64/release/libsummit_std.a");
             }
             
             codegen.emitExecutable(output_file, libs, no_stdlib);
@@ -98,6 +131,7 @@ int main(int argc, char** argv) {
         return 0;
         
     } catch (const llvm::Error& e) {
+        // llvm errors need special handling
         std::string error_str;
         llvm::raw_string_ostream error_stream(error_str);
         error_stream << e;

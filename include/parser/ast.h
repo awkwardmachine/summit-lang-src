@@ -4,9 +4,11 @@
 #include <string>
 #include <variant>
 #include <optional>
+#include <cstdint>
 
 namespace Summit {
 
+// base ast nodes
 struct ASTNode {
     virtual ~ASTNode() = default;
 };
@@ -14,6 +16,7 @@ struct ASTNode {
 struct Expression : ASTNode {};
 struct Statement : ASTNode {};
 
+// type system
 struct Type {
     enum class Kind {
         I8, I16, I32, I64,
@@ -27,8 +30,11 @@ struct Type {
     
     Kind kind;
     
+    Type() : kind(Kind::INFERRED) {}
+    
     explicit Type(Kind k) : kind(k) {}
     
+    // factory methods for creating types
     static Type i8() { return Type(Kind::I8); }
     static Type i16() { return Type(Kind::I16); }
     static Type i32() { return Type(Kind::I32); }
@@ -43,6 +49,14 @@ struct Type {
     static Type string() { return Type(Kind::STRING); }
     static Type void_type() { return Type(Kind::VOID); }
     static Type inferred() { return Type(Kind::INFERRED); }
+
+    bool operator==(const Type& other) const {
+        return kind == other.kind;
+    }
+    
+    bool operator!=(const Type& other) const {
+        return kind != other.kind;
+    }
     
     std::string toString() const {
         switch (kind) {
@@ -65,11 +79,38 @@ struct Type {
     }
 };
 
-// Expressions
+// literal expressions
 struct NumberLiteral : Expression {
-    std::variant<int64_t, double> value;
+    std::variant<int64_t, double, std::string> value;
+    
     explicit NumberLiteral(int64_t v) : value(v) {}
     explicit NumberLiteral(double v) : value(v) {}
+    explicit NumberLiteral(const std::string& largeInt) : value(largeInt) {}
+    
+    // helpers for checking what kind of number we have
+    bool isLargeInteger() const {
+        return std::holds_alternative<std::string>(value);
+    }
+    
+    bool isRegularInteger() const {
+        return std::holds_alternative<int64_t>(value);
+    }
+    
+    bool isFloat() const {
+        return std::holds_alternative<double>(value);
+    }
+    
+    int64_t getIntValue() const {
+        return std::get<int64_t>(value);
+    }
+    
+    double getFloatValue() const {
+        return std::get<double>(value);
+    }
+    
+    const std::string& getLargeIntValue() const {
+        return std::get<std::string>(value);
+    }
 };
 
 struct StringLiteral : Expression {
@@ -77,6 +118,12 @@ struct StringLiteral : Expression {
     explicit StringLiteral(std::string v) : value(std::move(v)) {}
 };
 
+struct BooleanLiteral : Expression {
+    bool value;
+    explicit BooleanLiteral(bool v) : value(v) {}
+};
+
+// identifier and access expressions
 struct Identifier : Expression {
     std::string name;
     explicit Identifier(std::string n) : name(std::move(n)) {}
@@ -89,6 +136,7 @@ struct MemberAccess : Expression {
         : object(std::move(obj)), member(std::move(mem)) {}
 };
 
+// function call expression
 struct FunctionCall : Expression {
     std::unique_ptr<Expression> callee;
     std::vector<std::unique_ptr<Expression>> arguments;
@@ -96,6 +144,7 @@ struct FunctionCall : Expression {
         : callee(std::move(c)), arguments(std::move(args)) {}
 };
 
+// operator expressions
 struct BinaryOp : Expression {
     std::unique_ptr<Expression> left;
     std::string op;
@@ -104,6 +153,30 @@ struct BinaryOp : Expression {
         : left(std::move(l)), op(std::move(o)), right(std::move(r)) {}
 };
 
+struct UnaryOp : Expression {
+    std::string op;
+    std::unique_ptr<Expression> operand;
+    UnaryOp(std::string o, std::unique_ptr<Expression> expr)
+        : op(std::move(o)), operand(std::move(expr)) {}
+};
+
+struct AssignmentExpr : Expression {
+    std::string name;
+    std::unique_ptr<Expression> value;
+    AssignmentExpr(std::string n, std::unique_ptr<Expression> v)
+        : name(std::move(n)), value(std::move(v)) {}
+};
+
+// type casting
+struct CastExpr : Expression {
+    std::unique_ptr<Expression> expression;
+    Type target_type;
+    
+    CastExpr(std::unique_ptr<Expression> expr, Type type) 
+        : expression(std::move(expr)), target_type(type) {}
+};
+
+// import expressions
 struct ImportExpr : Expression {
     std::string module;
     explicit ImportExpr(std::string mod) : module(std::move(mod)) {}
@@ -117,23 +190,11 @@ struct NamedImportExpr : public Expression {
         : module(std::move(mod)), imports(std::move(imp)) {}
 };
 
-// Statements
+// statements
 struct ExpressionStmt : Statement {
     std::unique_ptr<Expression> expression;
     explicit ExpressionStmt(std::unique_ptr<Expression> expr)
         : expression(std::move(expr)) {}
-};
-
-struct UsingStmt : public Statement {
-    std::string module_alias;
-    
-    UsingStmt(std::string alias) : module_alias(std::move(alias)) {}
-};
-
-struct UsingImportStmt : public Statement {
-    std::unique_ptr<Expression> import_expr;
-    
-    UsingImportStmt(std::unique_ptr<Expression> expr) : import_expr(std::move(expr)) {}
 };
 
 struct VarDecl : Statement {
@@ -146,20 +207,44 @@ struct VarDecl : Statement {
         : name(std::move(n)), type(t), initializer(std::move(init)), is_const(c) {}
 };
 
+struct FunctionDecl : Statement {
+    std::string name;
+    std::vector<std::string> parameters;
+    std::vector<std::unique_ptr<Statement>> body;
+    std::optional<Type> return_type;
+    std::vector<Type> parameter_types;
+    
+    FunctionDecl(std::string name, 
+                 std::vector<std::string> parameters, 
+                 std::vector<std::unique_ptr<Statement>> body,
+                 std::optional<Type> return_type = std::nullopt,
+                 std::vector<Type> param_types = {})
+        : name(std::move(name)), 
+          parameters(std::move(parameters)), 
+          body(std::move(body)),
+          return_type(return_type),
+          parameter_types(std::move(param_types)) {}
+};
+
 struct ReturnStmt : Statement {
     std::unique_ptr<Expression> value;
     explicit ReturnStmt(std::unique_ptr<Expression> v) : value(std::move(v)) {}
 };
 
-struct FunctionDecl : Statement {
-    std::string name;
-    std::vector<std::string> parameters;
-    std::vector<std::unique_ptr<Statement>> body;
-    FunctionDecl(std::string n, std::vector<std::string> params,
-                 std::vector<std::unique_ptr<Statement>> b)
-        : name(std::move(n)), parameters(std::move(params)), body(std::move(b)) {}
+// import statements
+struct UsingStmt : public Statement {
+    std::string module_alias;
+    
+    UsingStmt(std::string alias) : module_alias(std::move(alias)) {}
 };
 
+struct UsingImportStmt : public Statement {
+    std::unique_ptr<Expression> import_expr;
+    
+    UsingImportStmt(std::unique_ptr<Expression> expr) : import_expr(std::move(expr)) {}
+};
+
+// top level program node
 struct Program : ASTNode {
     std::vector<std::unique_ptr<Statement>> statements;
 };

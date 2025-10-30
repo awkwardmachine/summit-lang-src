@@ -1,3 +1,6 @@
 /.xmake
 /build
 /test
+/build-stdlib
+/build-windows
+/lib

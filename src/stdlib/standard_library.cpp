@@ -1,62 +1,112 @@
-#include <iostream>
+#include <cstdio>
+#include <cstdlib>
 #include <cmath>
 #include <cstdint>
-#include "stdlib/standard_library.h"
 
 extern "C" {
 
-// String I/O functions
+// string I/O functions
 void summit_io_println(const char* str) {
-    std::cout << str << std::endl;
+    printf("%s\n", str);
+    fflush(stdout);
 }
 
 void summit_io_print(const char* str) {
-    std::cout << str << std::flush;
+    printf("%s", str);
+    fflush(stdout);
 }
 
-// Integer I/O functions
 void summit_io_println_int(int64_t value) {
-    std::cout << value << std::endl;
+    printf("%lld\n", (long long)value);
+    fflush(stdout);
 }
 
 void summit_io_print_int(int64_t value) {
-    std::cout << value << std::flush;
+    printf("%lld", (long long)value);
+    fflush(stdout);
 }
 
-// Float I/O functions
-void summit_io_println_float(double value) {
-    std::cout << value << std::endl;
+void summit_io_println_uint(uint64_t value) {
+    printf("%llu\n", (unsigned long long)value);
+    fflush(stdout);
 }
 
-void summit_io_print_float(double value) {
-    std::cout << value << std::flush;
+void summit_io_print_uint(uint64_t value) {
+    printf("%llu", (unsigned long long)value);
+    fflush(stdout);
 }
 
-// Math functions
+// float I/O functions
+void summit_io_println_f32(float value) {
+    if (value == floor(value)) {
+        printf("%.1f\n", value);
+    } else {
+        printf("%.7g\n", value);
+    }
+    fflush(stdout);
+}
+
+void summit_io_print_f32(float value) {
+    if (value == floor(value)) {
+        printf("%.1f", value);
+    } else {
+        printf("%.7g", value);
+    }
+    fflush(stdout);
+}
+
+void summit_io_println_f64(double value) {
+    if (value == floor(value)) {
+        printf("%.1f\n", value);
+    } else {
+        printf("%.15g\n", value);
+    }
+    fflush(stdout);
+}
+
+void summit_io_print_f64(double value) {
+    if (value == floor(value)) {
+        printf("%.1f", value);
+    } else {
+        printf("%.15g", value);
+    }
+    fflush(stdout);
+}
+
+// boolean I/O functions
+void summit_io_println_bool(bool value) {
+    printf("%s\n", value ? "true" : "false");
+    fflush(stdout);
+}
+
+void summit_io_print_bool(bool value) {
+    printf("%s", value ? "true" : "false");
+    fflush(stdout);
+}
+
+// math functions
 double summit_math_sqrt(double x) {
-    return std::sqrt(x);
+    return sqrt(x);
 }
 
 double summit_math_pow(double x, double y) {
-    return std::pow(x, y);
+    return pow(x, y);
 }
 
 double summit_math_sin(double x) {
-    return std::sin(x);
+    return sin(x);
 }
 
 double summit_math_cos(double x) {
-    return std::cos(x);
+    return cos(x);
 }
 
 }
 
 namespace Summit {
 namespace stdlib {
-
 void initialize() {
     
 }
-
 }
 }

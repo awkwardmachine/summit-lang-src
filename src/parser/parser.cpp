@@ -1,4 +1,6 @@
 #include <stdexcept>
+#include <iostream>
+#include <ostream>
 
 #include "parser/parser.h"
 
@@ -19,6 +21,7 @@ std::unique_ptr<Program> Parser::parse() {
     return program;
 }
 
+// basic token navigation utilities
 bool Parser::isAtEnd() const {
     return peek().type == TokenType::END_OF_FILE;
 }
@@ -61,6 +64,7 @@ void Parser::consume(TokenType type, const std::string& message) {
     throw std::runtime_error(message + " at line " + std::to_string(peek().line));
 }
 
+// type parsing
 std::optional<Type> Parser::parseType() {
     TokenType tt = peek().type;
     
@@ -81,6 +85,110 @@ std::optional<Type> Parser::parseType() {
     }
 }
 
+// type inference helpers
+std::optional<Type> Parser::inferExpressionType(const Expression* expr) {
+    // imports and references dont have types we can infer
+    if (auto* import_expr = dynamic_cast<const ImportExpr*>(expr)) {
+        return std::nullopt;
+    }
+    
+    if (auto* named_import = dynamic_cast<const NamedImportExpr*>(expr)) {
+        return std::nullopt;
+    }
+    
+    if (auto* member = dynamic_cast<const MemberAccess*>(expr)) {
+        return std::nullopt;
+    }
+    
+    // literals are easy
+    if (auto* num = dynamic_cast<const NumberLiteral*>(expr)) {
+        if (std::holds_alternative<int64_t>(num->value)) {
+            return Type::i64();
+        } else {
+            return Type::f64();
+        }
+    }
+    
+    if (auto* str = dynamic_cast<const StringLiteral*>(expr)) {
+        return Type::string();
+    }
+    
+    if (auto* boolean = dynamic_cast<const BooleanLiteral*>(expr)) {
+        return Type::boolean();
+    }
+    
+    // identifiers need lookup
+    if (auto* id = dynamic_cast<const Identifier*>(expr)) {
+        auto it = variable_types_.find(id->name);
+        if (it != variable_types_.end()) {
+            return it->second;
+        }
+        return std::nullopt;
+    }
+
+    // casts tell us explicitly
+    if (auto* cast_expr = dynamic_cast<const CastExpr*>(expr)) {
+        return cast_expr->target_type;
+    }
+    
+    // binary ops need to check both sides
+    if (auto* binop = dynamic_cast<const BinaryOp*>(expr)) {
+        auto left_type = inferExpressionType(binop->left.get());
+        auto right_type = inferExpressionType(binop->right.get());
+        
+        if (left_type.has_value() && right_type.has_value()) {
+            // if either side is float, result is float
+            if (isFloatingPoint(left_type.value()) || isFloatingPoint(right_type.value())) {
+                return Type::f64();
+            }
+            return Type::i64();
+        }
+    }
+    
+    // unary ops preserve type
+    if (auto* unary = dynamic_cast<const UnaryOp*>(expr)) {
+        auto operand_type = inferExpressionType(unary->operand.get());
+        if (operand_type.has_value()) {
+            return operand_type.value();
+        }
+    }
+    
+    return std::nullopt;
+}
+
+bool Parser::isFloatingPoint(const Type& type) {
+    return type.kind == Type::Kind::F32 || type.kind == Type::Kind::F64;
+}
+
+bool Parser::isInteger(const Type& type) {
+    return type.kind == Type::Kind::I8 || type.kind == Type::Kind::I16 ||
+           type.kind == Type::Kind::I32 || type.kind == Type::Kind::I64 ||
+           type.kind == Type::Kind::U8 || type.kind == Type::Kind::U16 ||
+           type.kind == Type::Kind::U32 || type.kind == Type::Kind::U64;
+}
+
+bool Parser::isReferenceExpression(const Expression* expr) {
+    // check if this expression is a reference to something (import, module, function)
+    if (dynamic_cast<const ImportExpr*>(expr)) {
+        return true;
+    }
+    
+    if (dynamic_cast<const NamedImportExpr*>(expr)) {
+        return true;
+    }
+    
+    if (auto* member = dynamic_cast<const MemberAccess*>(expr)) {
+        return true;
+    }
+    
+    if (auto* id = dynamic_cast<const Identifier*>(expr)) {
+        return true;
+    }
+    
+    return false;
+}
+
+// declaration parsing
 std::unique_ptr<Statement> Parser::declaration() {
     skipNewlines();
     if (match(TokenType::CONST)) return constDeclaration();
@@ -91,6 +199,7 @@ std::unique_ptr<Statement> Parser::declaration() {
 }
 
 std::unique_ptr<Statement> Parser::usingDeclaration() {
+    // using statements can import whole modules or specific functions
     if (match(TokenType::AT)) {
         auto import_expr = import();
         
@@ -110,6 +219,26 @@ std::unique_ptr<Statement> Parser::usingDeclaration() {
     Token alias = advance();
     if (alias.type != TokenType::IDENTIFIER) {
         throw std::runtime_error("Expected module alias after 'using' at line " + std::to_string(alias.line));
+    }
+    
+    // handle chained member access like using std.io
+    if (match(TokenType::DOT)) {
+        std::unique_ptr<Expression> id_expr = std::make_unique<Identifier>(alias.lexeme);
+        
+        while (true) {
+            Token member = advance();
+            if (member.type != TokenType::IDENTIFIER) {
+                throw std::runtime_error("Expected member name after '.' at line " + std::to_string(member.line));
+            }
+            
+            id_expr = std::make_unique<MemberAccess>(std::move(id_expr), member.lexeme);
+            
+            if (!match(TokenType::DOT)) {
+                break;
+            }
+        }
+        
+        return std::make_unique<UsingImportStmt>(std::move(id_expr));
     }
     
     return std::make_unique<UsingStmt>(alias.lexeme);
@@ -133,11 +262,22 @@ std::unique_ptr<Statement> Parser::constDeclaration() {
     consume(TokenType::ASSIGN, "Expected '=' after constant name");
     auto initializer = expression();
     
-    if (!type && !isReferenceExpression(initializer.get())) {
-        throw std::runtime_error(
-            "Constant '" + name.lexeme + "' requires type annotation at line " + 
-            std::to_string(name.line)
-        );
+    bool is_reference = isReferenceExpression(initializer.get());
+    
+    // try to infer type if not provided and its not a reference
+    if (!type && !is_reference) {
+        type = inferExpressionType(initializer.get());
+        
+        if (!type) {
+            throw std::runtime_error(
+                "Cannot infer type for constant '" + name.lexeme + "' at line " + 
+                std::to_string(name.line) + ". Please provide explicit type annotation."
+            );
+        }
+    }
+
+    if (type.has_value()) {
+        variable_types_.insert({name.lexeme, type.value()});
     }
     
     return std::make_unique<VarDecl>(name.lexeme, type, std::move(initializer), true);
@@ -160,6 +300,10 @@ std::unique_ptr<Statement> Parser::varDeclaration() {
     
     consume(TokenType::ASSIGN, "Expected '=' after variable name");
     auto initializer = expression();
+
+    if (type.has_value()) {
+        variable_types_.insert({name.lexeme, type.value()});
+    }
     
     return std::make_unique<VarDecl>(name.lexeme, type, std::move(initializer), false);
 }
@@ -173,6 +317,9 @@ std::unique_ptr<Statement> Parser::functionDeclaration() {
     consume(TokenType::LPAREN, "Expected '(' after function name");
     
     std::vector<std::string> parameters;
+    std::vector<Type> parameter_types;
+    
+    // parse parameter list
     if (!check(TokenType::RPAREN)) {
         do {
             skipNewlines();
@@ -181,28 +328,75 @@ std::unique_ptr<Statement> Parser::functionDeclaration() {
                 throw std::runtime_error("Expected parameter name at line " + std::to_string(param.line));
             }
             parameters.push_back(param.lexeme);
+            
+            Type param_type = Type::inferred();
+            if (match(TokenType::COLON)) {
+                auto parsed_type = parseType();
+                if (!parsed_type) {
+                    throw std::runtime_error("Expected parameter type after ':' at line " + std::to_string(peek().line));
+                }
+                param_type = parsed_type.value();
+            }
+            parameter_types.push_back(param_type);
+            
             skipNewlines();
         } while (match(TokenType::COMMA));
     }
     
     consume(TokenType::RPAREN, "Expected ')' after parameters");
+    
+    // check for return type annotation
+    std::optional<Type> return_type = std::nullopt;
+    if (match(TokenType::ARROW)) {
+        return_type = parseType();
+        if (!return_type) {
+            throw std::runtime_error("Expected return type after '->' at line " + std::to_string(peek().line));
+        }
+    } else {
+        return_type = Type::inferred();
+    }
+    
     consume(TokenType::COLON, "Expected ':' after function signature");
     skipNewlines();
     
+    auto previous_return_type = current_function_return_type_;
+    current_function_return_type_ = return_type;
+    
+    // parse function body
     std::vector<std::unique_ptr<Statement>> body;
+    bool has_return_statement = false;
+    
     while (!check(TokenType::END) && !isAtEnd()) {
         skipNewlines();
-        if (!check(TokenType::END)) {
-            body.push_back(declaration());
-            skipNewlines();
+        if (check(TokenType::END)) break;
+        
+        auto stmt = declaration();
+        
+        if (auto* return_stmt = dynamic_cast<ReturnStmt*>(stmt.get())) {
+            has_return_statement = true;
         }
+        
+        body.push_back(std::move(stmt));
+        skipNewlines();
     }
     
     consume(TokenType::END, "Expected 'end' after function body");
+
+    // make sure functions with return types actually return something
+    if (return_type.has_value() && return_type.value().kind != Type::Kind::INFERRED && !has_return_statement) {
+        throw std::runtime_error(
+            "Function '" + name.lexeme + "' with return type '" + 
+            return_type.value().toString() + "' must have at least one return statement at line " + 
+            std::to_string(name.line)
+        );
+    }
+
+    current_function_return_type_ = previous_return_type;
     
-    return std::make_unique<FunctionDecl>(name.lexeme, std::move(parameters), std::move(body));
+    return std::make_unique<FunctionDecl>(name.lexeme, std::move(parameters), std::move(body), return_type, std::move(parameter_types));
 }
 
+// statement parsing
 std::unique_ptr<Statement> Parser::statement() {
     if (match(TokenType::RET)) return returnStatement();
     return expressionStatement();
@@ -210,6 +404,17 @@ std::unique_ptr<Statement> Parser::statement() {
 
 std::unique_ptr<Statement> Parser::returnStatement() {
     auto value = expression();
+
+    // auto cast return values to match function signature if needed
+    if (current_function_return_type_.has_value()) {
+        auto return_type = current_function_return_type_.value();
+        auto value_type = inferExpressionType(value.get());
+        
+        if (value_type.has_value() && value_type.value() != return_type) {
+            value = std::make_unique<CastExpr>(std::move(value), return_type);
+        }
+    }
+    
     return std::make_unique<ReturnStmt>(std::move(value));
 }
 
@@ -218,12 +423,24 @@ std::unique_ptr<Statement> Parser::expressionStatement() {
     return std::make_unique<ExpressionStmt>(std::move(expr));
 }
 
+// expression parsing with precedence climbing through a top-down recursive descent structure
 std::unique_ptr<Expression> Parser::expression() {
     return assignment();
 }
 
 std::unique_ptr<Expression> Parser::assignment() {
-    return addition();
+    auto expr = addition();
+    
+    if (match(TokenType::ASSIGN)) {
+        if (auto* id = dynamic_cast<Identifier*>(expr.get())) {
+            auto value = assignment();
+            return std::make_unique<AssignmentExpr>(id->name, std::move(value));
+        } else {
+            throw std::runtime_error("Invalid assignment target at line " + std::to_string(previous().line));
+        }
+    }
+    
+    return expr;
 }
 
 std::unique_ptr<Expression> Parser::addition() {
@@ -231,7 +448,27 @@ std::unique_ptr<Expression> Parser::addition() {
     
     while (match(TokenType::PLUS) || match(TokenType::MINUS)) {
         std::string op = previous().lexeme;
+        int op_line = previous().line;
         auto right = multiplication();
+        
+        // type check to prevent mixing floats and ints without explicit cast
+        auto left_type = inferExpressionType(expr.get());
+        auto right_type = inferExpressionType(right.get());
+        
+        if (left_type.has_value() && right_type.has_value()) {
+            bool left_is_float = isFloatingPoint(left_type.value());
+            bool right_is_float = isFloatingPoint(right_type.value());
+            bool left_is_int = isInteger(left_type.value());
+            bool right_is_int = isInteger(right_type.value());
+            
+            if ((left_is_float && right_is_int) || (left_is_int && right_is_float)) {
+                throw std::runtime_error(
+                    "Type error at line " + std::to_string(op_line) + 
+                    ": Cannot perform binary operation between integer and floating-point types without explicit cast"
+                );
+            }
+        }
+        
         expr = std::make_unique<BinaryOp>(std::move(expr), op, std::move(right));
     }
     
@@ -239,12 +476,55 @@ std::unique_ptr<Expression> Parser::addition() {
 }
 
 std::unique_ptr<Expression> Parser::multiplication() {
-    auto expr = call();
+    auto expr = unary();
     
     while (match(TokenType::STAR) || match(TokenType::SLASH)) {
         std::string op = previous().lexeme;
-        auto right = call();
+        int op_line = previous().line;
+        auto right = unary();
+        
+        // same type checking as addition
+        auto left_type = inferExpressionType(expr.get());
+        auto right_type = inferExpressionType(right.get());
+        
+        if (left_type.has_value() && right_type.has_value()) {
+            bool left_is_float = isFloatingPoint(left_type.value());
+            bool right_is_float = isFloatingPoint(right_type.value());
+            bool left_is_int = isInteger(left_type.value());
+            bool right_is_int = isInteger(right_type.value());
+
+            if ((left_is_float && right_is_int) || (left_is_int && right_is_float)) {
+                throw std::runtime_error(
+                    "Type error at line " + std::to_string(op_line) + 
+                    ": Cannot perform binary operation between integer and floating-point types without explicit cast"
+                );
+            }
+        }
+        
         expr = std::make_unique<BinaryOp>(std::move(expr), op, std::move(right));
+    }
+    
+    return expr;
+}
+
+std::unique_ptr<Expression> Parser::unary() {
+    if (match(TokenType::MINUS)) {
+        auto operand = unary();
+        return std::make_unique<UnaryOp>("-", std::move(operand));
+    }
+    return cast();
+}
+
+std::unique_ptr<Expression> Parser::cast() {
+    auto expr = call();
+    
+    // handle explicit type casts with "as"
+    while (match(TokenType::AS)) {
+        auto target_type = parseType();
+        if (!target_type) {
+            throw std::runtime_error("Expected type after 'as' at line " + std::to_string(peek().line));
+        }
+        expr = std::make_unique<CastExpr>(std::move(expr), target_type.value());
     }
     
     return expr;
@@ -253,6 +533,7 @@ std::unique_ptr<Expression> Parser::multiplication() {
 std::unique_ptr<Expression> Parser::call() {
     auto expr = memberAccess();
     
+    // handle function calls
     while (match(TokenType::LPAREN)) {
         std::vector<std::unique_ptr<Expression>> arguments;
         
@@ -274,6 +555,7 @@ std::unique_ptr<Expression> Parser::call() {
 std::unique_ptr<Expression> Parser::memberAccess() {
     auto expr = primary();
     
+    // handle chained member access like std.io.println
     while (match(TokenType::DOT)) {
         Token member = advance();
         if (member.type != TokenType::IDENTIFIER) {
@@ -286,16 +568,20 @@ std::unique_ptr<Expression> Parser::memberAccess() {
 }
 
 std::unique_ptr<Expression> Parser::primary() {
+    // handle imports
     if (match(TokenType::AT)) {
         return import();
     }
     
+    // literals
     if (match(TokenType::NUMBER)) {
         Token num = previous();
-        if (std::holds_alternative<int64_t>(num.literal)) {
-            return std::make_unique<NumberLiteral>(std::get<int64_t>(num.literal));
+        if (num.isLargeInteger()) {
+            return std::make_unique<NumberLiteral>(num.getLargeIntValue());
+        } else if (num.isRegularInteger()) {
+            return std::make_unique<NumberLiteral>(num.getIntValue());
         } else {
-            return std::make_unique<NumberLiteral>(std::get<double>(num.literal));
+            return std::make_unique<NumberLiteral>(num.getFloatValue());
         }
     }
     
@@ -303,10 +589,19 @@ std::unique_ptr<Expression> Parser::primary() {
         return std::make_unique<StringLiteral>(std::get<std::string>(previous().literal));
     }
     
+    if (match(TokenType::TRUE)) {
+        return std::make_unique<BooleanLiteral>(true);
+    }
+    
+    if (match(TokenType::FALSE)) {
+        return std::make_unique<BooleanLiteral>(false);
+    }
+    
     if (match(TokenType::IDENTIFIER)) {
         return std::make_unique<Identifier>(previous().lexeme);
     }
     
+    // grouped expressions
     if (match(TokenType::LPAREN)) {
         auto expr = expression();
         consume(TokenType::RPAREN, "Expected ')' after expression");
@@ -316,11 +611,14 @@ std::unique_ptr<Expression> Parser::primary() {
     throw std::runtime_error("Unexpected token '" + peek().lexeme + "' at line " + std::to_string(peek().line));
 }
 
+// import statement parsing
+// handles different import styles like @import("module"), @import name from "module", etc
 std::unique_ptr<Expression> Parser::import() {
     if (!match(TokenType::IDENTIFIER) || previous().lexeme != "import") {
         throw std::runtime_error("Expected 'import' after '@' at line " + std::to_string(peek().line));
     }
     
+    // figure out which import style we're dealing with
     if (check(TokenType::IDENTIFIER) && !check(TokenType::LBRACE)) {
         return singleNamedImport();
     } else if (match(TokenType::LBRACE)) {
@@ -331,6 +629,7 @@ std::unique_ptr<Expression> Parser::import() {
 }
 
 std::unique_ptr<Expression> Parser::singleNamedImport() {
+    // this corresponds to @import name from "module"
     Token importName = advance();
     if (importName.type != TokenType::IDENTIFIER) {
         throw std::runtime_error("Expected identifier in import at line " + std::to_string(importName.line));
@@ -351,6 +650,7 @@ std::unique_ptr<Expression> Parser::singleNamedImport() {
 }
 
 std::unique_ptr<Expression> Parser::namedImport() {
+    // this corresponds to @import { name1, name2 } from "module"
     std::vector<std::string> imports;
     
     if (!check(TokenType::RBRACE)) {
@@ -378,6 +678,7 @@ std::unique_ptr<Expression> Parser::namedImport() {
 }
 
 std::unique_ptr<Expression> Parser::simpleImport() {
+    // this corresponds to @import("module")
     consume(TokenType::LPAREN, "Expected '(' after '@import'");
     
     if (!match(TokenType::STRING)) {
@@ -388,21 +689,6 @@ std::unique_ptr<Expression> Parser::simpleImport() {
     consume(TokenType::RPAREN, "Expected ')' after module name");
     
     return std::make_unique<ImportExpr>(module);
-}
-bool Parser::isReferenceExpression(const Expression* expr) {
-    if (dynamic_cast<const ImportExpr*>(expr)) {
-        return true;
-    }
-    
-    if (dynamic_cast<const NamedImportExpr*>(expr)) {
-        return true;
-    }
-    
-    if (auto* member = dynamic_cast<const MemberAccess*>(expr)) {
-        return true;
-    }
-    
-    return false;
 }
 
 }

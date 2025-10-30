@@ -1,22 +1,24 @@
 #pragma once
 #include <string>
 #include <variant>
+#include <cstdint>
 
 namespace Summit {
 
 enum class TokenType {
     // Keywords
-    CONST, VAR, FUNC, RET, END, IF, ELSE, WHILE, FOR, FROM, USING,
+    CONST, VAR, FUNC, RET, END, IF, 
+    ELSE, WHILE, FOR, FROM, USING, AS,
     
     // Type keywords
     I8, I16, I32, I64,
     U8, U16, U32, U64,
     F32, F64,
-    BOOL, STRING_TYPE,
+    BOOL, STRING_TYPE, TRUE, FALSE,
     
     // Operators
     ASSIGN, PLUS, MINUS, STAR, SLASH, LPAREN, RPAREN,
-    LBRACE, RBRACE, COLON, DOT, COMMA, AT,
+    LBRACE, RBRACE, COLON, DOT, COMMA, AT, GREATER, ARROW, RIGHT_SHIFT,
     
     // Literals
     IDENTIFIER, STRING, NUMBER,
@@ -32,6 +34,7 @@ struct Token {
     size_t line;
     size_t column;
     
+    // constructors for different token types
     Token(TokenType t, std::string lex, size_t ln, size_t col)
         : type(t), lexeme(std::move(lex)), line(ln), column(col) {}
     
@@ -43,6 +46,35 @@ struct Token {
     
     Token(TokenType t, std::string lex, std::string val, size_t ln, size_t col)
         : type(t), lexeme(std::move(lex)), literal(std::move(val)), line(ln), column(col) {}
+    
+    // helpers for checking number types
+    bool isLargeInteger() const {
+        return type == TokenType::NUMBER && 
+               std::holds_alternative<std::string>(literal);
+    }
+    
+    bool isRegularInteger() const {
+        return type == TokenType::NUMBER && 
+               std::holds_alternative<int64_t>(literal);
+    }
+    
+    bool isFloat() const {
+        return type == TokenType::NUMBER && 
+               std::holds_alternative<double>(literal);
+    }
+    
+    // getters for extracting values
+    int64_t getIntValue() const {
+        return std::get<int64_t>(literal);
+    }
+    
+    double getFloatValue() const {
+        return std::get<double>(literal);
+    }
+    
+    const std::string& getLargeIntValue() const {
+        return std::get<std::string>(literal);
+    }
 };
 
 }

@@ -1,6 +1,6 @@
-using @import("std.io")
+@import println from "std.io"
 
-func main():
-    println("Hello, world!")
-    print("This also works!")
+func main() -> i8:
+    println("Hello!")
+    ret 0
 end

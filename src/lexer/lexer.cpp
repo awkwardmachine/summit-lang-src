@@ -1,10 +1,15 @@
 #include <cctype>
 #include <stdexcept>
+#include <string>
+#include <limits>
+#include <cstdint>
 
 #include "lexer/lexer.h"
 
 namespace Summit {
 
+// keyword lookup table
+// maps reserved words to their token types
 const std::unordered_map<std::string, TokenType> Lexer::keywords_ = {
     {"const", TokenType::CONST},
     {"var", TokenType::VAR},
@@ -17,6 +22,9 @@ const std::unordered_map<std::string, TokenType> Lexer::keywords_ = {
     {"for", TokenType::FOR},
     {"from", TokenType::FROM},
     {"using", TokenType::USING},
+    {"as", TokenType::AS},
+    {"true", TokenType::TRUE},
+    {"false", TokenType::FALSE},
     
     {"i8", TokenType::I8},
     {"i16", TokenType::I16},
@@ -44,6 +52,7 @@ std::vector<Token> Lexer::tokenize() {
     return std::move(tokens_);
 }
 
+// basic character reading utilities
 char Lexer::advance() {
     column_++;
     return source_[current_++];
@@ -63,6 +72,7 @@ bool Lexer::match(char expected) {
     return true;
 }
 
+// token scanning
 void Lexer::scanToken() {
     skipWhitespace();
     if (isAtEnd()) return;
@@ -70,6 +80,7 @@ void Lexer::scanToken() {
     size_t start_col = column_;
     char c = advance();
     
+    // big switch for all the single char tokens
     switch (c) {
         case '(': tokens_.emplace_back(TokenType::LPAREN, "(", line_, start_col); break;
         case ')': tokens_.emplace_back(TokenType::RPAREN, ")", line_, start_col); break;
@@ -78,7 +89,15 @@ void Lexer::scanToken() {
         case ',': tokens_.emplace_back(TokenType::COMMA, ",", line_, start_col); break;
         case '@': tokens_.emplace_back(TokenType::AT, "@", line_, start_col); break;
         case '+': tokens_.emplace_back(TokenType::PLUS, "+", line_, start_col); break;
-        case '-': tokens_.emplace_back(TokenType::MINUS, "-", line_, start_col); break;
+        case '-': 
+            // check for arrow operator
+            if (peek() == '>') {
+                advance();
+                tokens_.emplace_back(TokenType::ARROW, "->", line_, start_col);
+            } else {
+                tokens_.emplace_back(TokenType::MINUS, "-", line_, start_col);
+            }
+            break;
         case '*': tokens_.emplace_back(TokenType::STAR, "*", line_, start_col); break;
         case '/': 
             tokens_.emplace_back(TokenType::SLASH, "/", line_, start_col); 
@@ -87,12 +106,22 @@ void Lexer::scanToken() {
         case '}': tokens_.emplace_back(TokenType::RBRACE, "}", line_, start_col); break;
         case '=': tokens_.emplace_back(TokenType::ASSIGN, "=", line_, start_col); break;
         case '"': tokens_.push_back(string()); break;
+        case '>': 
+            // check for right shift operator
+            if (peek() == '>') {
+                advance();
+                tokens_.emplace_back(TokenType::RIGHT_SHIFT, ">>", line_, start_col);
+            } else {
+                tokens_.emplace_back(TokenType::GREATER, ">", line_, start_col);
+            }
+            break;
         case '\n':
             tokens_.emplace_back(TokenType::NEWLINE, "\\n", line_, start_col);
             line_++;
             column_ = 1;
             break;
         default:
+            // check for numbers, identifiers, or invalid chars
             if (std::isdigit(c)) {
                 current_--; column_--;
                 tokens_.push_back(number());
@@ -106,24 +135,22 @@ void Lexer::scanToken() {
     }
 }
 
+// whitespace and comment handling
 void Lexer::skipWhitespace() {
     while (!isAtEnd()) {
         char c = peek();
         if (c == ' ' || c == '\t' || c == '\r') {
             advance();
-        } else if (c == '#') {
-            skipHashComment();
         } else if (c == '/' && peekNext() == '/') {
-            skipDoubleSlashComment();
+            // make sure its actually a comment and not division
+            if (current_ == 0 || std::isspace(source_[current_ - 1])) {
+                skipDoubleSlashComment();
+            } else {
+                break;
+            }
         } else {
             break;
         }
-    }
-}
-
-void Lexer::skipHashComment() {
-    while (!isAtEnd() && peek() != '\n') {
-        advance();
     }
 }
 
@@ -136,10 +163,12 @@ void Lexer::skipDoubleSlashComment() {
     }
 }
 
+// identifier and keyword parsing
 Token Lexer::identifier() {
     size_t start = current_;
     size_t start_col = column_;
     
+    // read until we hit something that cant be part of an identifier
     while (!isAtEnd() && (std::isalnum(peek()) || peek() == '_')) {
         advance();
     }
@@ -151,32 +180,74 @@ Token Lexer::identifier() {
     return Token(type, text, line_, start_col);
 }
 
+// number parsing
+// handles integers, floats, and underscores for readability
 Token Lexer::number() {
     size_t start = current_;
     size_t start_col = column_;
     bool is_float = false;
+    bool has_underscores = false;
     
-    while (!isAtEnd() && std::isdigit(peek())) {
-        advance();
-    }
-    
-    if (!isAtEnd() && peek() == '.' && std::isdigit(peekNext())) {
-        is_float = true;
-        advance();
-        while (!isAtEnd() && std::isdigit(peek())) {
+    std::string number_str;
+    while (!isAtEnd()) {
+        char c = peek();
+        if (std::isdigit(c)) {
+            number_str += advance();
+        } else if (c == '_') {
+            // underscores for readability like 1_000_000
+            has_underscores = true;
             advance();
+        } else if (c == '.' && std::isdigit(peekNext())) {
+            is_float = true;
+            number_str += advance();
+        } else {
+            break;
         }
     }
     
-    std::string text = source_.substr(start, current_ - start);
+    // strip out underscores before parsing
+    std::string clean_number_str;
+    if (has_underscores) {
+        for (char c : number_str) {
+            if (c != '_') clean_number_str += c;
+        }
+    } else {
+        clean_number_str = number_str;
+    }
     
     if (is_float) {
-        return Token(TokenType::NUMBER, text, std::stod(text), line_, start_col);
+        try {
+            double value = std::stod(clean_number_str);
+            return Token(TokenType::NUMBER, number_str, value, line_, start_col);
+        } catch (const std::out_of_range&) {
+            throw std::runtime_error("Floating point number too large at line " + std::to_string(line_));
+        }
     } else {
-        return Token(TokenType::NUMBER, text, static_cast<int64_t>(std::stoll(text)), line_, start_col);
+        // try to parse as signed int first
+        try {
+            int64_t int_value = std::stoll(clean_number_str);
+            return Token(TokenType::NUMBER, number_str, int_value, line_, start_col);
+        } catch (const std::out_of_range&) {
+            // if that fails, try unsigned
+            try {
+                uint64_t uint_value = std::stoull(clean_number_str);
+
+                // double check its actually within u64 range
+                if (clean_number_str.size() > 20 || 
+                    (clean_number_str.size() == 20 && clean_number_str > "18446744073709551615")) {
+                    throw std::out_of_range("Number exceeds uint64_t range");
+                }
+
+                return Token(TokenType::NUMBER, number_str, clean_number_str, line_, start_col);
+            } catch (const std::out_of_range&) {
+                throw std::runtime_error("Integer too large at line " + std::to_string(line_));
+            }
+        }
     }
 }
 
+// string literal parsing
+// handles escape sequences and multiline strings
 Token Lexer::string() {
     size_t start = current_;
     size_t start_col = column_ - 1;
@@ -191,6 +262,7 @@ Token Lexer::string() {
             advance();
             if (!isAtEnd()) {
                 char c = advance();
+                // handle escape sequences
                 switch (c) {
                     case 'n': value += '\n'; break;
                     case 't': value += '\t'; break;

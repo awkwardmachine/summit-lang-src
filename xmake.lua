@@ -5,12 +5,6 @@ set_warnings("none")
 
 add_rules("mode.release", "mode.debug")
 
-target("summit_std")
-    set_kind("static")
-    add_files("src/stdlib/*.cpp")
-    add_includedirs("include", {public = true})
-    add_headerfiles("include/stdlib/*.h")
-
 target("summit")
     set_kind("binary")
     add_files("src/*.cpp")
@@ -18,7 +12,9 @@ target("summit")
     add_files("src/parser/*.cpp")
     add_files("src/codegen/*.cpp")
     add_includedirs("include", "include/lexer", "include/parser", "include/codegen", "include/stdlib")
-    add_deps("summit_std")
+
+    add_cxflags("-fexceptions")
+    add_ldflags("-fexceptions")
     
     on_load(function (target)
         local llvm_cxxflags = os.iorun("llvm-config --cxxflags")
@@ -49,8 +45,7 @@ target("summit")
     
     if is_mode("release") then
         add_cxflags(
-            "-O3",
-            "-march=native",
+            "-Os",
             "-fdata-sections",
             "-ffunction-sections",
             "-DNDEBUG",
@@ -58,27 +53,37 @@ target("summit")
             "-fno-stack-protector",
             "-fno-math-errno",
             "-fno-ident",
-            "-fexceptions",
+            "-fno-plt",
+            "-fno-semantic-interposition",
+            "-march=native",
             "-flto",
-            "-ffast-math",
-            "-funroll-loops"
+            "-fvisibility=hidden", 
+            "-fvisibility-inlines-hidden"
         )
         
         add_ldflags(
             "-Wl,--gc-sections",
             "-Wl,--as-needed",
             "-Wl,--strip-all",
+            "-Wl,-z,noseparate-code",
+            "-Wl,--no-export-dynamic",
+            "-Wl,--hash-style=gnu",
             "-s",
-            "-flto"
+            "-flto",
+            "-Wl,-O3"
         )
+        
+        set_symbols("hidden")
         set_strip("all")
-    end
-    
-    if is_mode("debug") then
+        set_optimize("smallest")
+        
+    elseif is_mode("debug") then
         add_cxflags("-g", "-O0")
         set_symbols("debug")
     end
     
     after_build(function (target)
-        print("Built Summit: " .. target:targetfile())
+        local size = os.filesize(target:targetfile())
+        local size_kb = math.floor(size / 1024)
+        print("Built Summit: " .. target:targetfile() .. " (" .. size_kb .. " KB)")
     end)

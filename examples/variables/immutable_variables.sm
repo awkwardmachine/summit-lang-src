@@ -1,0 +1,109 @@
+// Immutable Constant Example
+//
+// The "const" keyword declares an immutable constant, a named value that
+// cannot be changed once initialized. Constants are stored in memory just like
+// variables, but the compiler enforces that their values never change.
+//
+// Constants are ideal for values that should remain fixed throughout a program,
+// such as mathematical constants, version numbers, or configuration limits.
+//
+// By convention, constants use UPPER_SNAKE_CASE to distinguish them from
+// mutable variables, which use snake_case. This naming convention makes it
+// immediately clear which values are immutable.
+//
+// Syntax:
+//     const <NAME>: <type> = <initial_value>
+//
+// The "<type>" annotation is optional because the compiler can infer it from
+// the value. However, explicit typing is useful for precision control or when
+// working with specific numeric widths.
+//
+// For example:
+//     const MAX_SIZE = 100 // inferred as i32 by default
+//     const PI: f64 = 3.14159 // explicitly 64-bit float
+//
+// Numeric Types Overview
+//
+// Signed integers ("i8", "i16", "i32", "i64") can represent both
+// positive and negative whole numbers.
+//
+// Unsigned integers ("u8", "u16", "u32", "u64") can only represent
+// non-negative values (zero and above), but can store larger positive
+// ranges using the same bit width.
+//
+// For example:
+//     i8  : -128 to 127
+//     u8  : 0 to 255
+//     i32 : -2,147,483,648 to 2,147,483,647
+//     u32 : 0 to 4,294,967,295
+//
+// Floating-point types ("f32", "f64") represent real numbers with
+// fractional parts and follow the IEEE 754 standard for 32-bit and 64-bit precision.
+//
+// Casting between integer and float types must be explicit to avoid ambiguity.
+// Example: "const F_VALUE = I32_VAL as f32"
+//
+// Example Demonstration
+
+@import println from "std.io"
+
+func main():
+    // Signed integers
+    const I8_VAL: i8 = -12
+    const I16_VAL: i16 = -32000
+    const I32_VAL: i32 = -100000
+    const I64_VAL: i64 = -9000000000
+
+    println(I8_VAL)
+    println(I16_VAL)
+    println(I32_VAL)
+    println(I64_VAL)
+
+    // Unsigned integers (non-negative only)
+    const U8_VAL: u8 = 250
+    const U16_VAL: u16 = 65000
+    const U32_VAL: u32 = 4000000000
+    const U64_VAL: u64 = 18000000000000000000
+
+    println(U8_VAL)
+    println(U16_VAL)
+    println(U32_VAL)
+    println(U64_VAL)
+
+    // Floating point types
+    const F32_VAL: f32 = 5.32
+    const F64_VAL: f64 = 3.1415926535
+
+    println(F32_VAL)
+    println(F64_VAL)
+
+    // Boolean type, represents logical true or false
+    const IS_ACTIVE: bool = true
+    println(IS_ACTIVE)
+
+    // String type, a sequence of characters
+    const MESSAGE: string = "Hello, world!"
+    println(MESSAGE)
+
+    // Type inference, explicit types are optional in most cases
+    const INFERRED_INT = 42 // inferred as i32
+    const INFERRED_FLOAT = 2.5 // inferred as f64
+    const INFERRED_STRING = "Hi!" // inferred as string
+
+    println(INFERRED_INT)
+    println(INFERRED_FLOAT)
+    println(INFERRED_STRING)
+
+    // Explicit type casting example
+    // (required when converting between integer and float types)
+    const NUMBER: i32 = 10
+    const PRECISE: f32 = NUMBER as f32 // convert i32 to f32
+    println(PRECISE)
+
+    // Immutability demonstration, consts cannot change after initialization
+    const VERSION: string = "1.0.0"
+    println(VERSION)
+
+    // Uncommenting this line would cause a compile error
+    // VERSION = "2.0.0" // Error, cannot assign to constant
+end

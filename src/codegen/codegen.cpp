@@ -416,7 +416,6 @@ void CodeGenerator::generate(const Program& program) {
 }
 
 // object file and executable generation
-
 void CodeGenerator::emitObjectFile(const std::string& filename) {
     auto target_triple = llvm::sys::getDefaultTargetTriple();
     module_->setTargetTriple(target_triple);
@@ -468,8 +467,8 @@ void CodeGenerator::emitExecutable(const std::string& filename,
     std::string link_cmd;
     
 #ifdef _WIN32
-    // windows linking is kinda messy with the stdlib
-    std::string stdlibPath, dllPath;
+    // windows linking, prefer static libraries to embed stdlib
+    std::string stdlibPath;
     bool useStdlib = !no_stdlib;
 
     if (useStdlib) {
@@ -477,7 +476,8 @@ void CodeGenerator::emitExecutable(const std::string& filename,
         if (envLib) {
             std::filesystem::path libPath(envLib);
             if (std::filesystem::is_directory(libPath)) {
-                std::vector<std::string> winLibNames = {"libsummit_std.lib", "libsummit_std.a"};
+                // prioritize static libraries (.a, .lib) over dynamic (.dll)
+                std::vector<std::string> winLibNames = {"libsummit_std.a", "libsummit_std.lib"};
                 for (const auto& libName : winLibNames) {
                     std::filesystem::path fullPath = libPath / libName;
                     if (std::filesystem::exists(fullPath)) { 
@@ -485,24 +485,15 @@ void CodeGenerator::emitExecutable(const std::string& filename,
                         break; 
                     }
                 }
-                std::vector<std::string> winDllNames = {"libsummit_std.dll", "summit_std.dll"};
-                for (const auto& dllName : winDllNames) {
-                    std::filesystem::path fullDllPath = libPath / dllName;
-                    if (std::filesystem::exists(fullDllPath)) { 
-                        dllPath = fullDllPath.string(); 
-                        break; 
-                    }
-                }
             } else if (std::filesystem::exists(libPath)) {
                 stdlibPath = envLib;
-                std::string ext = libPath.extension().string();
-                if (ext == ".dll") dllPath = envLib;
             }
         }
 
         if (stdlibPath.empty()) {
             std::vector<std::string> searchPaths = {"./lib"};
-            std::vector<std::string> libNames = {"libsummit_std.lib", "libsummit_std.a"};
+            // prioritize static libraries
+            std::vector<std::string> libNames = {"libsummit_std.a", "libsummit_std.lib"};
             
             for (const auto& searchPath : searchPaths) {
                 for (const auto& libName : libNames) {
@@ -514,45 +505,33 @@ void CodeGenerator::emitExecutable(const std::string& filename,
                 }
                 if (!stdlibPath.empty()) break;
             }
-
-            if (dllPath.empty()) {
-                std::vector<std::string> dllNames = {"libsummit_std.dll", "summit_std.dll"};
-                for (const auto& dllName : dllNames) {
-                    std::filesystem::path fullPath = std::filesystem::path("./lib") / dllName;
-                    if (std::filesystem::exists(fullPath)) {
-                        dllPath = fullPath.string();
-                        break;
-                    }
-                }
-            }
         }
         
-        if (stdlibPath.empty() && dllPath.empty()) {
+        if (stdlibPath.empty()) {
             std::cerr << "Warning: Standard library not found.\n";
             std::cerr << "Set SUMMIT_LIB to point to the library directory.\n";
             std::cerr << "Searched in: ./lib/\n";
         } else {
-            std::cout << "Using standard library: " << (stdlibPath.empty() ? dllPath : stdlibPath) << std::endl;
-            if (!dllPath.empty()) std::cout << "Shared library: " << dllPath << std::endl;
+            std::cout << "Using standard library: " << stdlibPath << std::endl;
         }
     }
 
-    link_cmd = "g++ -mconsole -o \"" + output_filename + "\" \"" + obj_file + "\"";
+    link_cmd = "g++ -mconsole -static-libgcc -static-libstdc++ -o \"" + output_filename + "\" \"" + obj_file + "\"";
 
-    if (useStdlib) {
-        if (!dllPath.empty()) {
-            std::filesystem::path dllDir = std::filesystem::path(dllPath).parent_path();
-            link_cmd += " -L\"" + dllDir.string() + "\" -lsummit_std";
-        } else if (!stdlibPath.empty()) {
-            link_cmd += " \"" + stdlibPath + "\"";
-        }
+    if (useStdlib && !stdlibPath.empty()) {
+        link_cmd += " \"" + stdlibPath + "\"";
     }
 
-    link_cmd += " -lstdc++";
+    // optimization flags to reduce size
+    link_cmd += " -Wl,--gc-sections";
+    link_cmd += " -Wl,--strip-all";
+    link_cmd += " -Os";
+    link_cmd += " -s";
+    
     link_cmd += " -luser32 -lkernel32 -lgdi32 -ladvapi32";
     
 #else
-    // unix linking is way cleaner
+    // unix linking, prefer static libraries
     link_cmd = "g++ -no-pie -o " + output_filename + " " + obj_file;
     
     if (!no_stdlib) {
@@ -562,7 +541,8 @@ void CodeGenerator::emitExecutable(const std::string& filename,
         if (envLib) {
             std::filesystem::path libPath(envLib);
             if (std::filesystem::is_directory(libPath)) {
-                std::vector<std::string> libNames = {"libsummit_std.so", "libsummit_std.dylib", "libsummit_std.a"};
+                // prioritize static library (.a) over shared (.so, .dylib)
+                std::vector<std::string> libNames = {"libsummit_std.a", "libsummit_std.so", "libsummit_std.dylib"};
                 for (const auto& libName : libNames) {
                     std::filesystem::path fullPath = libPath / libName;
                     if (std::filesystem::exists(fullPath)) {
@@ -576,10 +556,11 @@ void CodeGenerator::emitExecutable(const std::string& filename,
         }
         
         if (stdlibPath.empty()) {
+            // prioritize static library
             std::vector<std::string> lib_paths = {
+                "lib/libsummit_std.a",
                 "lib/libsummit_std.so",
-                "lib/libsummit_std.dylib",
-                "lib/libsummit_std.a"
+                "lib/libsummit_std.dylib"
             };
             
             for (const auto& path : lib_paths) {
@@ -593,7 +574,9 @@ void CodeGenerator::emitExecutable(const std::string& filename,
         
         if (!stdlibPath.empty()) {
             std::cout << "Found standard library: " << stdlibPath << std::endl;
-            if (stdlibPath.find(".so") != std::string::npos || stdlibPath.find(".dylib") != std::string::npos) {
+            if (stdlibPath.find(".a") != std::string::npos) {
+                link_cmd += " \"" + stdlibPath + "\"";
+            } else if (stdlibPath.find(".so") != std::string::npos || stdlibPath.find(".dylib") != std::string::npos) {
                 size_t last_slash = stdlibPath.find_last_of("/");
                 std::string lib_dir = (last_slash != std::string::npos) ? stdlibPath.substr(0, last_slash) : ".";
 
@@ -602,8 +585,6 @@ void CodeGenerator::emitExecutable(const std::string& filename,
                 
                 link_cmd += " -L\"" + lib_dir_str + "\" -lsummit_std";
                 link_cmd += " -Wl,-rpath,\"" + lib_dir_str + "\"";
-            } else {
-                link_cmd += " \"" + stdlibPath + "\"";
             }
         } else {
             std::cerr << "Warning: Could not find libsummit_std, trying with -lsummit_std" << std::endl;
@@ -615,8 +596,13 @@ void CodeGenerator::emitExecutable(const std::string& filename,
         
         link_cmd += " -lstdc++ -lm -lpthread -ldl";
     }
-#endif
     
+    // optimization flags to reduce size
+    link_cmd += " -Wl,--gc-sections";
+    link_cmd += " -Wl,--strip-all";
+    link_cmd += " -Os";
+    link_cmd += " -s";
+#endif
     // add any extra libs the user wants
     for (const auto& lib : libs) {
 #ifdef _WIN32
@@ -638,23 +624,6 @@ void CodeGenerator::emitExecutable(const std::string& filename,
     std::cout << "Linking command: " << link_cmd << std::endl;
     
     int result = std::system(link_cmd.c_str());
-    
-#ifdef _WIN32
-    // copy dll to output dir if needed
-    if (result == 0 && !dllPath.empty()) {
-        std::filesystem::path exeDir = std::filesystem::path(output_filename).parent_path();
-        if (exeDir.empty()) exeDir = ".";
-        std::filesystem::path targetDll = exeDir / std::filesystem::path(dllPath).filename();
-        try { 
-            if (!std::filesystem::exists(targetDll)) {
-                std::filesystem::copy_file(dllPath, targetDll, std::filesystem::copy_options::overwrite_existing);
-                std::cout << "Copied DLL to output directory" << std::endl;
-            }
-        } catch (...) { 
-            std::cerr << "Warning: Failed to copy DLL" << std::endl;
-        }
-    }
-#endif
     
     if (result != 0) {
         throw std::runtime_error("Linking failed with exit code: " + std::to_string(result));
@@ -687,7 +656,6 @@ void CodeGenerator::emitExecutable(const std::string& filename,
 }
 
 // expression codegen dispatch
-
 llvm::Value* CodeGenerator::codegen(const Expression& expr) {
     if (auto* e = dynamic_cast<const NumberLiteral*>(&expr)) {
         return codegenNumberLiteral(*e);

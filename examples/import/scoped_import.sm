@@ -11,25 +11,25 @@
 // Then use "lib.io.println(...)" instead of "std.io.println(...)".
 
 // Import the full standard library persistently
-const std = @import("std")
+fixed std = @import("std")
 
-func main():
+func main() do
     // Access the "io" submodule and call println()
     std.io.println("Hello, world!")
 
     // Alias a submodule to a shorter name for convenience
-    const io = std.io
+    fixed io = std.io
     io.println("Hello again!")  // same as std.io.println
 
     // Directly alias a function to a new name
-    const print = io.println
+    fixed print = io.println
     print("Hello using function alias!")  // same as io.println
 
     // You can also alias using the full module path in one step
-    const println_fn = std.io.println
+    fixed println_fn = std.io.println
     println_fn("Hello using full-path alias!")
 
     // Finally, you can import a submodule directly if you only need it
-    const io_direct = @import("std.io")
+    fixed io_direct = @import("std.io")
     io_direct.println("Hello using direct submodule import!")
 end

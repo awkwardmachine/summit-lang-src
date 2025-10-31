@@ -188,10 +188,68 @@ bool Parser::isReferenceExpression(const Expression* expr) {
     return false;
 }
 
+std::unique_ptr<Statement> Parser::ifStatement() {
+    auto condition = expression();
+    
+    // check for then token
+    if (check(TokenType::THEN)) {
+        advance();
+    } else {
+        throw std::runtime_error("Expected 'then' after if condition at line " + std::to_string(peek().line));
+    }
+    
+    skipNewlines();
+    
+    // parse then branch
+    std::vector<std::unique_ptr<Statement>> then_branch;
+    while (!check(TokenType::END) && !check(TokenType::ELIF) && 
+           !check(TokenType::ELSE) && !isAtEnd()) {
+        skipNewlines();
+        if (check(TokenType::END) || check(TokenType::ELIF) || check(TokenType::ELSE)) break;
+        then_branch.push_back(declaration());
+        skipNewlines();
+    }
+    
+    auto if_stmt = std::make_unique<IfStmt>(std::move(condition), std::move(then_branch));
+    
+    // parse elif branches
+    while (match(TokenType::ELIF)) {
+        auto elif_condition = expression();
+        consume(TokenType::THEN, "Expected 'then' after elif condition");
+        skipNewlines();
+        
+        std::vector<std::unique_ptr<Statement>> elif_body;
+        while (!check(TokenType::END) && !check(TokenType::ELIF) && 
+               !check(TokenType::ELSE) && !isAtEnd()) {
+            skipNewlines();
+            if (check(TokenType::END) || check(TokenType::ELIF) || check(TokenType::ELSE)) break;
+            elif_body.push_back(declaration());
+            skipNewlines();
+        }
+        
+        auto elif_stmt = std::make_unique<IfStmt>(std::move(elif_condition), std::move(elif_body));
+        if_stmt->elif_branches.push_back(std::move(elif_stmt));
+    }
+    
+    // parse else branch
+    if (match(TokenType::ELSE)) {
+        skipNewlines();
+        while (!check(TokenType::END) && !isAtEnd()) {
+            skipNewlines();
+            if (check(TokenType::END)) break;
+            if_stmt->else_branch.push_back(declaration());
+            skipNewlines();
+        }
+    }
+    
+    consume(TokenType::END, "Expected 'end' after if statement");
+    return if_stmt;
+}
+
 // declaration parsing
 std::unique_ptr<Statement> Parser::declaration() {
     skipNewlines();
-    if (match(TokenType::CONST)) return constDeclaration();
+    if (match(TokenType::FIXED)) return constDeclaration();
     if (match(TokenType::VAR)) return varDeclaration();
     if (match(TokenType::FUNC)) return functionDeclaration();
     if (match(TokenType::USING)) return usingDeclaration();
@@ -356,7 +414,7 @@ std::unique_ptr<Statement> Parser::functionDeclaration() {
         return_type = Type::inferred();
     }
     
-    consume(TokenType::COLON, "Expected ':' after function signature");
+    consume(TokenType::DO, "Expected 'do' after function signature");
     skipNewlines();
     
     auto previous_return_type = current_function_return_type_;
@@ -398,6 +456,7 @@ std::unique_ptr<Statement> Parser::functionDeclaration() {
 
 // statement parsing
 std::unique_ptr<Statement> Parser::statement() {
+    if (match(TokenType::IF)) return ifStatement();
     if (match(TokenType::RET)) return returnStatement();
     return expressionStatement();
 }
@@ -423,13 +482,27 @@ std::unique_ptr<Statement> Parser::expressionStatement() {
     return std::make_unique<ExpressionStmt>(std::move(expr));
 }
 
-// expression parsing with precedence climbing through a top-down recursive descent structure
+
+std::unique_ptr<Expression> Parser::comparison() {
+    auto expr = addition();
+    
+    while (match(TokenType::LESS) || match(TokenType::LESS_EQUAL) || 
+           match(TokenType::GREATER) || match(TokenType::GREATER_EQUAL) ||
+           match(TokenType::EQUAL) || match(TokenType::NOT_EQUAL)) {
+        std::string op = previous().lexeme;
+        auto right = addition();
+        expr = std::make_unique<BinaryOp>(std::move(expr), op, std::move(right));
+    }
+    
+    return expr;
+}
+
 std::unique_ptr<Expression> Parser::expression() {
-    return assignment();
+    return comparison();
 }
 
 std::unique_ptr<Expression> Parser::assignment() {
-    auto expr = addition();
+    auto expr = comparison();
     
     if (match(TokenType::ASSIGN)) {
         if (auto* id = dynamic_cast<Identifier*>(expr.get())) {

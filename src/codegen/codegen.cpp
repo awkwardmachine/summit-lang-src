@@ -459,15 +459,16 @@ void CodeGenerator::emitExecutable(const std::string& filename,
     emitObjectFile(obj_file);
 
     std::string output_filename = filename;
-#ifdef _WIN32
-    if (output_filename.find(".exe") == std::string::npos) {
-        output_filename += ".exe";
-    }
-#endif
-    
-    std::string link_cmd;
-    
-#ifdef _WIN32
+    #ifdef _WIN32
+        if (output_filename.find(".exe") == std::string::npos) {
+            output_filename += ".exe";
+        }
+    #endif
+        
+        std::string link_cmd;
+        bool needsWrapper = false;
+        
+    #ifdef _WIN32
     // windows linking, prefer static libraries to embed stdlib
     std::string stdlibPath;
     bool useStdlib = !no_stdlib;
@@ -517,7 +518,7 @@ void CodeGenerator::emitExecutable(const std::string& filename,
         }
     }
 
-    bool needsWrapper = !nowindow;
+    needsWrapper = !nowindow;
 
     link_cmd = "g++ -mconsole -static-libgcc -static-libstdc++ -o \"" + output_filename + "\" \"" + obj_file + "\"";
 
@@ -559,7 +560,7 @@ void CodeGenerator::emitExecutable(const std::string& filename,
         }
         
         if (stdlibPath.empty()) {
-            // prioritize static library
+            // prioritize static library, use filesystem::exists instead of ifstream
             std::vector<std::string> lib_paths = {
                 "lib/libsummit_std.a",
                 "lib/libsummit_std.so",
@@ -567,8 +568,7 @@ void CodeGenerator::emitExecutable(const std::string& filename,
             };
             
             for (const auto& path : lib_paths) {
-                std::ifstream test(path);
-                if (test.good()) {
+                if (std::filesystem::exists(path)) {
                     stdlibPath = path;
                     break;
                 }
@@ -590,11 +590,9 @@ void CodeGenerator::emitExecutable(const std::string& filename,
                 link_cmd += " -Wl,-rpath,\"" + lib_dir_str + "\"";
             }
         } else {
-            std::cerr << "Warning: Could not find libsummit_std, trying with -lsummit_std" << std::endl;
-            std::filesystem::path abs_lib_dir = std::filesystem::absolute("./lib");
-            std::string lib_dir_str = abs_lib_dir.string();
-            link_cmd += " -L\"" + lib_dir_str + "\" -lsummit_std";
-            link_cmd += " -Wl,-rpath,\"" + lib_dir_str + "\"";
+            std::cerr << "Warning: Could not find libsummit_std" << std::endl;
+            std::cerr << "Searched in: ./lib/" << std::endl;
+            std::cerr << "Please compile the standard library for Linux or use --no-stdlib" << std::endl;
         }
         
         link_cmd += " -lstdc++ -lm -lpthread -ldl";
@@ -606,15 +604,14 @@ void CodeGenerator::emitExecutable(const std::string& filename,
     link_cmd += " -Os";
     link_cmd += " -s";
 #endif
+
     // add any extra libs the user wants
     for (const auto& lib : libs) {
-#ifdef _WIN32
-        if (lib.find("build/linux") != std::string::npos || 
-            lib.find("linux/x86_64") != std::string::npos) {
-            std::cout << "Skipping incompatible library: " << lib << std::endl;
+        // skip the standard library since we already handled it
+        if (lib.find("libsummit_std") != std::string::npos) {
             continue;
         }
-#endif
+        
         if (lib.find(".a") != std::string::npos || lib.find(".so") != std::string::npos || 
             lib.find(".dylib") != std::string::npos || lib.find(".lib") != std::string::npos ||
             lib.find(".dll") != std::string::npos) {
@@ -637,7 +634,7 @@ void CodeGenerator::emitExecutable(const std::string& filename,
     }
     
 #ifdef _WIN32
-    // if it need a wrapper, create and compile it
+    // if it needs a wrapper, create and compile it
     if (needsWrapper) {
         std::cout << "Creating console wrapper..." << std::endl;
         std::string wrapperSource = 
@@ -861,7 +858,6 @@ llvm::Value* CodeGenerator::codegenCast(const CastExpr& expr) {
 }
 
 // binary operation codegen
-
 llvm::Value* CodeGenerator::codegenBinaryOp(const BinaryOp& expr) {
     llvm::Value* left = codegen(*expr.left);
     llvm::Value* right = codegen(*expr.right);
@@ -949,6 +945,51 @@ llvm::Value* CodeGenerator::codegenBinaryOp(const BinaryOp& expr) {
         }
     }
     
+    // handle comparison operators
+    if (expr.op == "<" || expr.op == "<=" || expr.op == ">" || expr.op == ">=" || 
+        expr.op == "==" || expr.op == "!=") {
+        
+        if (left->getType()->isFloatingPointTy()) {
+            // floating point comparisons
+            if (expr.op == "<") {
+                return builder_->CreateFCmpOLT(left, right, "cmptmp");
+            } else if (expr.op == "<=") {
+                return builder_->CreateFCmpOLE(left, right, "cmptmp");
+            } else if (expr.op == ">") {
+                return builder_->CreateFCmpOGT(left, right, "cmptmp");
+            } else if (expr.op == ">=") {
+                return builder_->CreateFCmpOGE(left, right, "cmptmp");
+            } else if (expr.op == "==") {
+                return builder_->CreateFCmpOEQ(left, right, "cmptmp");
+            } else if (expr.op == "!=") {
+                return builder_->CreateFCmpONE(left, right, "cmptmp");
+            }
+        } else {
+            // integer comparisons
+            if (expr.op == "<") {
+                return use_unsigned ? 
+                    builder_->CreateICmpULT(left, right, "cmptmp") :
+                    builder_->CreateICmpSLT(left, right, "cmptmp");
+            } else if (expr.op == "<=") {
+                return use_unsigned ? 
+                    builder_->CreateICmpULE(left, right, "cmptmp") :
+                    builder_->CreateICmpSLE(left, right, "cmptmp");
+            } else if (expr.op == ">") {
+                return use_unsigned ? 
+                    builder_->CreateICmpUGT(left, right, "cmptmp") :
+                    builder_->CreateICmpSGT(left, right, "cmptmp");
+            } else if (expr.op == ">=") {
+                return use_unsigned ? 
+                    builder_->CreateICmpUGE(left, right, "cmptmp") :
+                    builder_->CreateICmpSGE(left, right, "cmptmp");
+            } else if (expr.op == "==") {
+                return builder_->CreateICmpEQ(left, right, "cmptmp");
+            } else if (expr.op == "!=") {
+                return builder_->CreateICmpNE(left, right, "cmptmp");
+            }
+        }
+    }
+    
     // floating point ops
     if (left->getType()->isFloatingPointTy()) {
         if (expr.op == "+") {
@@ -980,8 +1021,120 @@ llvm::Value* CodeGenerator::codegenBinaryOp(const BinaryOp& expr) {
     throw std::runtime_error("Unknown binary operator: " + expr.op);
 }
 
-// function call codegen
+void CodeGenerator::codegenIfStmt(const IfStmt& stmt) {
+    llvm::Function* function = builder_->GetInsertBlock()->getParent();
+    
+    // create basic blocks for the if statement
+    llvm::BasicBlock* then_block = llvm::BasicBlock::Create(*context_, "then", function);
+    llvm::BasicBlock* else_block = nullptr;
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(*context_, "ifcont", function);
+    
+    // generate the main condition
+    llvm::Value* cond_value = codegen(*stmt.condition);
+    
+    // convert condition to boolean if needed
+    if (!cond_value->getType()->isIntegerTy(1)) {
+        if (cond_value->getType()->isIntegerTy()) {
+            cond_value = builder_->CreateICmpNE(
+                cond_value, 
+                llvm::ConstantInt::get(cond_value->getType(), 0),
+                "ifcond"
+            );
+        } else if (cond_value->getType()->isFloatingPointTy()) {
+            cond_value = builder_->CreateFCmpONE(
+                cond_value,
+                llvm::ConstantFP::get(cond_value->getType(), 0.0),
+                "ifcond"
+            );
+        } else {
+            throw std::runtime_error("If condition must be a boolean, integer, or floating-point value");
+        }
+    }
+    
+    // create initial branch
+    if (!stmt.elif_branches.empty() || !stmt.else_branch.empty()) {
+        else_block = llvm::BasicBlock::Create(*context_, "else", function);
+        builder_->CreateCondBr(cond_value, then_block, else_block);
+    } else {
+        builder_->CreateCondBr(cond_value, then_block, merge_block);
+    }
+    
+    // generate then block
+    builder_->SetInsertPoint(then_block);
+    for (const auto& s : stmt.then_branch) {
+        codegen(*s);
+    }
+    builder_->CreateBr(merge_block);
+    
+    // generate elif branches if they exist
+    llvm::BasicBlock* current_else_block = else_block;
+    for (size_t i = 0; i < stmt.elif_branches.size(); i++) {
+        const auto& elif_stmt = stmt.elif_branches[i];
+        
+        llvm::BasicBlock* elif_then_block = llvm::BasicBlock::Create(*context_, "elifthen", function);
+        llvm::BasicBlock* next_elif_block = nullptr;
+        
+        bool is_last_elif = (i == stmt.elif_branches.size() - 1) && stmt.else_branch.empty();
+        if (!is_last_elif) {
+            next_elif_block = llvm::BasicBlock::Create(*context_, "elifelse", function);
+        }
+        
+        // generate elif condition in the current else block
+        builder_->SetInsertPoint(current_else_block);
+        llvm::Value* elif_cond_value = codegen(*elif_stmt->condition);
+        if (!elif_cond_value->getType()->isIntegerTy(1)) {
+            if (elif_cond_value->getType()->isIntegerTy()) {
+                elif_cond_value = builder_->CreateICmpNE(
+                    elif_cond_value, 
+                    llvm::ConstantInt::get(elif_cond_value->getType(), 0),
+                    "elifcond"
+                );
+            } else if (elif_cond_value->getType()->isFloatingPointTy()) {
+                elif_cond_value = builder_->CreateFCmpONE(
+                    elif_cond_value,
+                    llvm::ConstantFP::get(elif_cond_value->getType(), 0.0),
+                    "elifcond"
+                );
+            }
+        }
+        
+        if (next_elif_block) {
+            builder_->CreateCondBr(elif_cond_value, elif_then_block, next_elif_block);
+        } else {
+            builder_->CreateCondBr(elif_cond_value, elif_then_block, merge_block);
+        }
+        
+        // generate elif then block
+        builder_->SetInsertPoint(elif_then_block);
+        for (const auto& s : elif_stmt->then_branch) {
+            codegen(*s);
+        }
+        builder_->CreateBr(merge_block);
+        
+        current_else_block = next_elif_block;
+    }
+    
+    // generate else block if it exists
+    if (!stmt.else_branch.empty()) {
+        builder_->SetInsertPoint(current_else_block ? current_else_block : else_block);
+        for (const auto& s : stmt.else_branch) {
+            codegen(*s);
+        }
+        builder_->CreateBr(merge_block);
+    } else if (current_else_block) {
+        // if there's an else block but no else branch, just branch to merge
+        builder_->SetInsertPoint(current_else_block);
+        builder_->CreateBr(merge_block);
+    } else if (else_block) {
+        builder_->SetInsertPoint(else_block);
+        builder_->CreateBr(merge_block);
+    }
+    
+    // continue from merge block
+    builder_->SetInsertPoint(merge_block);
+}
 
+// function call codegen
 llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
     llvm::Function* callee = nullptr;
     std::string func_name;
@@ -1193,7 +1346,6 @@ llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
 }
 
 // import statement codegen
-
 llvm::Value* CodeGenerator::codegenImport(const ImportExpr& expr) {
     ensureModuleExists(expr.module);
     return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0, true));
@@ -1218,7 +1370,6 @@ llvm::Value* CodeGenerator::codegenNamedImport(const NamedImportExpr& expr) {
 }
 
 // variable assignment and type promotion
-
 void CodeGenerator::promoteVariableType(const std::string& name, llvm::Value* new_value, const Type& new_summit_type) {
     // promote a variable to a wider type if needed
     llvm::Value* var = named_values_[name];
@@ -1423,7 +1574,6 @@ std::string CodeGenerator::typeToString(const Type& type) {
 }
 
 // statement codegen dispatch
-
 void CodeGenerator::codegen(const Statement& stmt) {
     if (auto* s = dynamic_cast<const VarDecl*>(&stmt)) {
         codegenVarDecl(*s);
@@ -1437,6 +1587,8 @@ void CodeGenerator::codegen(const Statement& stmt) {
         codegenUsingStmt(*s);
     } else if (auto* s = dynamic_cast<const UsingImportStmt*>(&stmt)) {
         codegenUsingImportStmt(*s);
+    } else if (auto* s = dynamic_cast<const IfStmt*>(&stmt)) {
+        codegenIfStmt(*s);
     } else {
         throw std::runtime_error("Unknown statement type");
     }

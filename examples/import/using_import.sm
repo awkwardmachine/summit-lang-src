@@ -7,13 +7,13 @@
 // Example 1: Using a submodule via alias
 //
 // Import the full module persistently and alias its submodule:
-const std = @import("std") // Persistent import of the full std module
-const io = std.io // Alias the io submodule
+fixed std = @import("std") // Persistent import of the full std module
+fixed io = std.io // Alias the io submodule
 
 // Bring all members of the aliased submodule into the current scope
 using io
 
-func main_1():
+func main_1() do
     // Access all members of std.io members directly anywhere in the program
     println("Hello using aliased io!")
     print("Print works too!")
@@ -24,7 +24,7 @@ end
 // You can use "using" directly on a submodule accessed via an inline import:
 using @import("std").io
 
-func main_2():
+func main_2() do
     println("Hello using inline import of std.io!")
     print("Direct access works here as well!")
 end
@@ -34,7 +34,7 @@ end
 // Alternatively, you can import the submodule directly and use it with "using":
 using @import("std.io")
 
-func main():
+func main() do
     println("Hello using direct inline submodule import!")
     print("All members of std.io are available directly!")
 

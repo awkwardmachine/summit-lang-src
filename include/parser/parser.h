@@ -49,10 +49,12 @@ private:
     std::unique_ptr<Statement> returnStatement();
     std::unique_ptr<Statement> usingDeclaration();
     std::unique_ptr<Statement> expressionStatement();
+    std::unique_ptr<Statement> ifStatement();
     
     // expression parsing (precedence climbing)
     std::unique_ptr<Expression> expression();
     std::unique_ptr<Expression> assignment();
+    std::unique_ptr<Expression> comparison();
     std::unique_ptr<Expression> addition();
     std::unique_ptr<Expression> multiplication();
     std::unique_ptr<Expression> call();

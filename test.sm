@@ -1,6 +1,12 @@
-@import println from "std.io"
 
-func main() -> i8:
-    println("Hello!")
+
+func main() -> i8 do
+    var x = 2
+
+    if x == 2 do
+        @import("std.io").println("It is 2")
+    elif x == 3 then
+
+    end
     ret 0
 end

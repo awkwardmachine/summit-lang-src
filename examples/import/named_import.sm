@@ -18,7 +18,7 @@
 
 @import {print, println} from "std.io" // Multiple member import
 
-func main():
+func main() do
     // Directly call the imported member "println"
     println("Hello with newline!")
 
@@ -36,6 +36,6 @@ end
 
 @import print from "std.io" // Single member import
 
-func example():
+func example() do
     print("Hello using single-member import!")
 end

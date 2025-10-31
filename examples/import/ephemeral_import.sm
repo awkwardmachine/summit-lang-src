@@ -1,4 +1,4 @@
-func main():
+func main() do
     // The @import expression performs a short lived (ephemeral) module import.
     //
     // It loads the specified module, and in this case, "std.io", but only for this expression.

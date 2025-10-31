@@ -7,8 +7,8 @@ namespace Summit {
 
 enum class TokenType {
     // Keywords
-    CONST, VAR, FUNC, RET, END, IF, 
-    ELSE, WHILE, FOR, FROM, USING, AS,
+    FIXED, VAR, FUNC, RET, END, IF, THEN, ELIF,
+    ELSE, WHILE, FOR, FROM, USING, AS, DO,
     
     // Type keywords
     I8, I16, I32, I64,
@@ -18,7 +18,7 @@ enum class TokenType {
     
     // Operators
     ASSIGN, PLUS, MINUS, STAR, SLASH, LPAREN, RPAREN,
-    LBRACE, RBRACE, COLON, DOT, COMMA, AT, GREATER, ARROW, RIGHT_SHIFT,
+    LBRACE, RBRACE, COLON, DOT, COMMA, AT, GREATER, LESS, LESS_EQUAL, GREATER_EQUAL, NOT_EQUAL, EQUAL, ARROW, RIGHT_SHIFT,
     
     // Literals
     IDENTIFIER, STRING, NUMBER,

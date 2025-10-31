@@ -90,6 +90,7 @@ private:
     void codegenExprStmt(const ExpressionStmt& stmt);
     void codegenUsingStmt(const UsingStmt& stmt);
     void codegenUsingImportStmt(const UsingImportStmt& stmt);
+    void codegenIfStmt(const IfStmt& stmt);
     
     // type system utilities
     llvm::Type* getLLVMType(const Type& type);

@@ -11,12 +11,14 @@ namespace Summit {
 // keyword lookup table
 // maps reserved words to their token types
 const std::unordered_map<std::string, TokenType> Lexer::keywords_ = {
-    {"const", TokenType::CONST},
+    {"fixed", TokenType::FIXED},
     {"var", TokenType::VAR},
     {"func", TokenType::FUNC},
     {"ret", TokenType::RET},
     {"end", TokenType::END},
     {"if", TokenType::IF},
+    {"then", TokenType::THEN},
+    {"elif", TokenType::ELIF},
     {"else", TokenType::ELSE},
     {"while", TokenType::WHILE},
     {"for", TokenType::FOR},
@@ -104,17 +106,37 @@ void Lexer::scanToken() {
             break;
         case '{': tokens_.emplace_back(TokenType::LBRACE, "{", line_, start_col); break;
         case '}': tokens_.emplace_back(TokenType::RBRACE, "}", line_, start_col); break;
-        case '=': tokens_.emplace_back(TokenType::ASSIGN, "=", line_, start_col); break;
-        case '"': tokens_.push_back(string()); break;
+        case '=': 
+            if (match('=')) {
+                tokens_.emplace_back(TokenType::EQUAL, "==", line_, start_col);
+            } else {
+                tokens_.emplace_back(TokenType::ASSIGN, "=", line_, start_col);
+            }
+            break;
+        case '!':
+            if (match('=')) {
+                tokens_.emplace_back(TokenType::NOT_EQUAL, "!=", line_, start_col);
+            } else {
+                tokens_.emplace_back(TokenType::INVALID, "!", line_, start_col);
+            }
+            break;
+        case '<':
+            if (match('=')) {
+                tokens_.emplace_back(TokenType::LESS_EQUAL, "<=", line_, start_col);
+            } else {
+                tokens_.emplace_back(TokenType::LESS, "<", line_, start_col);
+            }
+            break;
         case '>': 
-            // check for right shift operator
-            if (peek() == '>') {
-                advance();
+            if (match('=')) {
+                tokens_.emplace_back(TokenType::GREATER_EQUAL, ">=", line_, start_col);
+            } else if (match('>')) {
                 tokens_.emplace_back(TokenType::RIGHT_SHIFT, ">>", line_, start_col);
             } else {
                 tokens_.emplace_back(TokenType::GREATER, ">", line_, start_col);
             }
             break;
+        case '"': tokens_.push_back(string()); break;
         case '\n':
             tokens_.emplace_back(TokenType::NEWLINE, "\\n", line_, start_col);
             line_++;

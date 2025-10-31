@@ -39,7 +39,7 @@
 
 @import println from "std.io"
 
-func main():
+func main() do
     // Signed integers
     var i8_val: i8 = -12
     var i16_val: i16 = -32000

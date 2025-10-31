@@ -231,6 +231,17 @@ struct ReturnStmt : Statement {
     explicit ReturnStmt(std::unique_ptr<Expression> v) : value(std::move(v)) {}
 };
 
+struct IfStmt : Statement {
+    std::unique_ptr<Expression> condition;
+    std::vector<std::unique_ptr<Statement>> then_branch;
+    std::vector<std::unique_ptr<IfStmt>> elif_branches;
+    std::vector<std::unique_ptr<Statement>> else_branch;
+    
+    IfStmt(std::unique_ptr<Expression> cond,
+           std::vector<std::unique_ptr<Statement>> then_body)
+        : condition(std::move(cond)), then_branch(std::move(then_body)) {}
+};
+
 // import statements
 struct UsingStmt : public Statement {
     std::string module_alias;

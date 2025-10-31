@@ -453,7 +453,8 @@ void CodeGenerator::emitObjectFile(const std::string& filename) {
 
 void CodeGenerator::emitExecutable(const std::string& filename, 
                                    const std::vector<std::string>& libs,
-                                   bool no_stdlib) {
+                                   bool no_stdlib,
+                                   bool nowindow) {
     std::string obj_file = filename + ".o";
     emitObjectFile(obj_file);
 
@@ -515,6 +516,8 @@ void CodeGenerator::emitExecutable(const std::string& filename,
             std::cout << "Using standard library: " << stdlibPath << std::endl;
         }
     }
+
+    bool needsWrapper = !nowindow;
 
     link_cmd = "g++ -mconsole -static-libgcc -static-libstdc++ -o \"" + output_filename + "\" \"" + obj_file + "\"";
 
@@ -621,22 +624,92 @@ void CodeGenerator::emitExecutable(const std::string& filename,
         }
     }
     
-    std::cout << "Linking command: " << link_cmd << std::endl;
-    
-    int result = std::system(link_cmd.c_str());
-    
-    if (result != 0) {
-        throw std::runtime_error("Linking failed with exit code: " + std::to_string(result));
+    if (!needsWrapper) {
+        std::cout << "Linking command: " << link_cmd << std::endl;
+        
+        int result = std::system(link_cmd.c_str());
+        
+        if (result != 0) {
+            throw std::runtime_error("Linking failed with exit code: " + std::to_string(result));
+        }
+        
+        std::remove(obj_file.c_str());
     }
     
-    std::remove(obj_file.c_str());
-    
-#ifndef _WIN32
+#ifdef _WIN32
+    // if it need a wrapper, create and compile it
+    if (needsWrapper) {
+        std::cout << "Creating console wrapper..." << std::endl;
+        std::string wrapperSource = 
+            "#include <windows.h>\n"
+            "#include <cstdio>\n"
+            "extern \"C\" int ProgramMain();\n"
+            "int main() {\n"
+            "    AllocConsole();\n"
+            "    FILE* f;\n"
+            "    freopen_s(&f,\"CONOUT$\",\"w\",stdout);\n"
+            "    freopen_s(&f,\"CONOUT$\",\"w\",stderr);\n"
+            "    freopen_s(&f,\"CONIN$\",\"r\",stdin);\n"
+            "    int r=ProgramMain();\n"
+            "    printf(\"\\nPress Enter...\");\n"
+            "    getchar();\n"
+            "    return r;\n"
+            "}\n";
+        
+        std::string wrapperCppFile = output_filename + "_w.cpp";
+        std::ofstream wrapperFile(wrapperCppFile);
+        if (!wrapperFile.is_open()) {
+            throw std::runtime_error("Failed to create wrapper source file");
+        }
+        wrapperFile << wrapperSource;
+        wrapperFile.close();
+        
+        std::string renamedObjFile = obj_file + ".r";
+        std::string objcopyCmd = "llvm-objcopy --redefine-sym main=ProgramMain \"" + obj_file + "\" \"" + renamedObjFile + "\"";
+        std::cout << "Renaming main symbol: " << objcopyCmd << std::endl;
+        
+        int renameResult = std::system(objcopyCmd.c_str());
+        
+        std::string objFileToUse;
+        if (renameResult == 0 && std::filesystem::exists(renamedObjFile)) {
+            objFileToUse = renamedObjFile;
+            std::cout << "Successfully renamed main to ProgramMain" << std::endl;
+        } else {
+            std::cerr << "Warning: Symbol renaming failed" << std::endl;
+            objFileToUse = obj_file;
+        }
+        
+        std::string wrapperCmd = "g++ -mwindows -Os -s -ffunction-sections -fdata-sections -Wl,--gc-sections -o \"" + 
+                                output_filename + "\" \"" + wrapperCppFile + "\" \"" + objFileToUse + "\"";
+        
+        if (useStdlib && !stdlibPath.empty()) {
+            wrapperCmd += " \"" + stdlibPath + "\"";
+        }
+        
+        wrapperCmd += " -luser32 -lkernel32";
+        
+        std::cout << "Compiling wrapper: " << wrapperCmd << std::endl;
+        int wrapperResult = std::system(wrapperCmd.c_str());
+        
+        std::remove(wrapperCppFile.c_str());
+        std::remove(obj_file.c_str());
+        if (std::filesystem::exists(renamedObjFile)) {
+            std::remove(renamedObjFile.c_str());
+        }
+        
+        if (wrapperResult != 0) {
+            throw std::runtime_error("Wrapper compilation failed");
+        }
+        
+        std::cout << "Successfully created windowed executable: " << output_filename << std::endl;
+    } else {
+        std::cout << "Successfully created executable: " << output_filename << std::endl;
+    }
+#else
     std::string chmod_cmd = "chmod +x " + output_filename;
     std::system(chmod_cmd.c_str());
+    std::cout << "Successfully created executable: " << output_filename << std::endl;
 #endif
-    
-    std::cout << "Successfully created executable: " + output_filename << std::endl;
     
     // print file size for fun
     std::ifstream file(output_filename, std::ios::binary | std::ios::ate);

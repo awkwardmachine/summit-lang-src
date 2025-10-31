@@ -23,7 +23,8 @@ public:
     void emitObjectFile(const std::string& filename);
     void emitExecutable(const std::string& filename, 
                    const std::vector<std::string>& libs,
-                   bool no_stdlib = false);
+                   bool no_stdlib = false,
+                   bool nowindow = true);
     
 private:
     // llvm infrastructure

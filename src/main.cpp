@@ -28,6 +28,7 @@ void printUsage(const char* program_name) {
     std::cerr << "  -o <output>    Output executable name\n";
     std::cerr << "  -c             Compile to object file only\n";
     std::cerr << "  -nostdlib      Do not link with standard library\n";
+    std::cerr << "  -nowindow      Do not show console window when using generated executable\n";
     std::cerr << "  -h, --help     Show this help message\n";
 }
 
@@ -60,6 +61,7 @@ int main(int argc, char** argv) {
     bool output_specified = false;
     bool compile_only = false;
     bool no_stdlib = false;
+    bool no_window = true;
     
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -79,6 +81,8 @@ int main(int argc, char** argv) {
             compile_only = true;
         } else if (arg == "-nostdlib") {
             no_stdlib = true;
+        } else if (arg == "-window") {
+            no_window = false;
         } else if (arg[0] != '-') {
             // not a flag, must be the input file
             input_file = arg;
@@ -125,7 +129,7 @@ int main(int argc, char** argv) {
                 libs.push_back("build/linux/x86_64/release/libsummit_std.a");
             }
             
-            codegen.emitExecutable(output_file, libs, no_stdlib);
+            codegen.emitExecutable(output_file, libs, no_stdlib, no_window);
         }
         
         return 0;

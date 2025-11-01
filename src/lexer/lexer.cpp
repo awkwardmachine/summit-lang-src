@@ -31,7 +31,7 @@ const std::unordered_map<std::string, TokenType> Lexer::keywords_ = {
     {"match", TokenType::MATCH},
     {"do", TokenType::DO},
     {"maybe", TokenType::MAYBE},
-    {"null", TokenType::NULL_LITERAL},
+    {"nil", TokenType::NIL_LITERAL},
     
     {"i8", TokenType::I8},
     {"i16", TokenType::I16},

@@ -584,7 +584,7 @@ std::unique_ptr<Statement> Parser::chanceStatement() {
 std::unique_ptr<Statement> Parser::returnStatement() {
     auto value = expression();
 
-    if (dynamic_cast<const NullLiteral*>(value.get())) {
+    if (dynamic_cast<const NilLiteral*>(value.get())) {
         return std::make_unique<ReturnStmt>(std::move(value));
     }
 
@@ -770,8 +770,8 @@ std::unique_ptr<Expression> Parser::memberAccess() {
 
 std::unique_ptr<Expression> Parser::primary() {
     // handle null literal
-    if (match(TokenType::NULL_LITERAL)) {
-        return std::make_unique<NullLiteral>();
+    if (match(TokenType::NIL_LITERAL)) {
+        return std::make_unique<NilLiteral>();
     }
     
     // handle imports

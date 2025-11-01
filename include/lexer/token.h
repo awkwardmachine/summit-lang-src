@@ -16,7 +16,7 @@ enum class TokenType {
     U8, U16, U32, U64,
     F32, F64,
     BOOL, STRING_TYPE, TRUE, FALSE,
-    NULL_LITERAL,
+    NIL_LITERAL,
     
     // Operators
     ASSIGN, PLUS, MINUS, STAR, SLASH, LPAREN, RPAREN,

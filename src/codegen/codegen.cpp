@@ -795,8 +795,8 @@ llvm::Value* CodeGenerator::codegen(const Expression& expr) {
         return codegenNumberLiteral(*e);
     } else if (auto* e = dynamic_cast<const StringLiteral*>(&expr)) {
         return codegenStringLiteral(*e);
-    } else if (auto* e = dynamic_cast<const NullLiteral*>(&expr)) {
-        return codegenNullLiteral(*e);
+    } else if (auto* e = dynamic_cast<const NilLiteral*>(&expr)) {
+        return codegenNilLiteral(*e);
     } else if (auto* e = dynamic_cast<const Identifier*>(&expr)) {
         return codegenIdentifier(*e);
     } else if (auto* e = dynamic_cast<const MemberAccess*>(&expr)) {
@@ -1015,7 +1015,7 @@ llvm::Value* CodeGenerator::codegenIdentifier(const Identifier& expr) {
     return builder_->CreateLoad(var_type, val, expr.name);
 }
 
-llvm::Value* CodeGenerator::codegenNullLiteral(const NullLiteral& expr) {
+llvm::Value* CodeGenerator::codegenNilLiteral(const NilLiteral& expr) {
     return llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*context_));
 }
 
@@ -2238,7 +2238,7 @@ void CodeGenerator::codegenVarDecl(const VarDecl& stmt) {
         
         llvm::AllocaInst* alloca = builder_->CreateAlloca(llvm_maybe_type, nullptr, stmt.name);
 
-        if (dynamic_cast<const NullLiteral*>(stmt.initializer.get())) {
+        if (dynamic_cast<const NilLiteral*>(stmt.initializer.get())) {
             llvm::Value* maybe_val = llvm::UndefValue::get(llvm_maybe_type);
 
             maybe_val = builder_->CreateInsertValue(
@@ -2469,11 +2469,11 @@ llvm::Value* CodeGenerator::extractMaybeValueForPrint(llvm::Value* maybe_alloca,
     builder_->CreateCall(print_func, {actual_value});
     builder_->CreateBr(merge_block);
     
-    // null block, print "null"
+    // nil block, print "nil"
     builder_->SetInsertPoint(null_block);
     llvm::Function* null_print_func = getOrDeclareStdlibFunction("std.io.println");
     if (null_print_func) {
-        llvm::Value* null_str = builder_->CreateGlobalStringPtr("null");
+        llvm::Value* null_str = builder_->CreateGlobalStringPtr("nil");
         builder_->CreateCall(null_print_func, {null_str});
     }
     builder_->CreateBr(merge_block);
@@ -2795,7 +2795,7 @@ void CodeGenerator::codegenReturn(const ReturnStmt& stmt) {
     llvm::Type* expected_return_type = current_func->getReturnType();
     
     // check if we're returning null and the return type is maybe
-    if (auto* null_lit = dynamic_cast<const NullLiteral*>(stmt.value.get())) {
+    if (auto* null_lit = dynamic_cast<const NilLiteral*>(stmt.value.get())) {
         auto func_it = function_return_summit_types_.find(current_func);
         if (func_it != function_return_summit_types_.end()) {
             Type return_summit_type = func_it->second;

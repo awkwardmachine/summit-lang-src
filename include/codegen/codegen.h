@@ -82,7 +82,7 @@ private:
     llvm::Value* codegenImport(const ImportExpr& expr);
     llvm::Value* codegenNamedImport(const NamedImportExpr& expr);
     llvm::Value* codegenChanceExpr(const ChanceExpr& expr);
-    llvm::Value* codegenNullLiteral(const NullLiteral& expr);
+    llvm::Value* codegenNilLiteral(const NilLiteral& expr);
     llvm::Value* codegenMaybeExpr(const MaybeExpr& expr);
     
     // statement codegen

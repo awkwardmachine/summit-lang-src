@@ -1,0 +1,112 @@
+// Maybe Type Documentation
+//
+// The "maybe" type represents an optional value that can either contain 
+// a value of a specified type or be "nil". It provides a safe way to 
+// handle potentially absent values without resorting to error-prone 
+// nil pointer references.
+//
+// Syntax:
+//     var <name>: maybe <type> = <value_or_nil>
+//
+//     func <name>(<parameters>) -> maybe <type> do
+//         // ...
+//     end
+//
+//     var <name>: maybe <type> = <expression> do
+//         <success_block>
+//     else
+//         <failure_block>
+//     end
+//
+// Basic Usage:
+//     var present: maybe i32 = 42 // Contains the value 42
+//     var absent: maybe i32 = nil // Contains no value
+//
+// Function Return Values:
+//     Functions can return "maybe" types to indicate potential failure 
+//     or absence. The "do/else" syntax provides a clean way to handle 
+//     both present and absent values.
+//
+// Type Compatibility:
+//     The "maybe" type can wrap any valid type including integers, 
+//     floats, booleans, strings, and custom structures.
+//
+// Key Benefits:
+//     - Nil Safety: Eliminates nil pointer exceptions by making 
+//       nilability explicit
+//     - Clear Intent: Makes it obvious when a value might be absent
+//     - Structured Handling: Encourages proper error handling through
+//       the "do/else" syntax
+//     - Type Safety: Maintains type information while allowing for absence
+//
+// Best Practices:
+//     - Use "maybe" for function returns that might fail or have no result
+//     - Always handle both cases (present and absent) using conditional syntax
+//     - Prefer "maybe" over returning special error values
+
+@import println from "std.io"
+
+// Example function that returns a maybe type
+// This function searches for a user and returns a boolean value if found,
+// or nil if the user doesn't exist
+func findUser(name: string) -> maybe bool do
+    if name == "Alice" then
+        ret true
+    elif name == "Bob" then
+        ret false
+    end
+    ret nil
+end
+
+// Example function demonstrating error handling with maybe
+// Returns nil when division by zero is attempted
+func divide(a: i32, b: i32) -> maybe i32 do
+    if b == 0 then
+        ret nil
+    else
+        ret a / b
+    end
+end
+
+func main() -> i8 do
+    // Basic maybe variable declarations
+    var x: maybe i8 = nil
+    var y: maybe i8 = 42
+    println(x) // Output: nil
+    println(y) // Output: 42
+    
+    // Conditional handling with do/else blocks
+    // The success block executes when the value is not nil
+    // The else block executes when the value is nil
+    var user1: maybe bool = findUser("Alice") do
+        println("Alice is found") // This executes
+    else
+        println("Alice not found")
+    end
+    
+    var user2: maybe bool = findUser("Unknown") do
+        println("User is found")
+    else
+        println("User not found") // This executes
+    end
+    
+    // Handling mathematical operations that might fail
+    var result1: maybe i32 = divide(10, 2) // Returns 5
+    var result2: maybe i32 = divide(10, 0) // Returns nil
+    
+    println(result1) // Output: 5
+    println(result2) // Output: nil
+    
+    // Maybe type with different data types
+    var maybe_float: maybe f64 = 3.14
+    var maybe_bool: maybe bool = true
+    var maybe_string: maybe string = "optional text"
+    var maybe_nothing: maybe string = nil
+    
+    println(maybe_float) // Output: 3.14
+    println(maybe_bool) // Output: true
+    println(maybe_string) // Output: optional text
+    println(maybe_nothing) // Output: nil
+    
+    ret 0
+end

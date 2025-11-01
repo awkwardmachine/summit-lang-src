@@ -1,0 +1,59 @@
+// Chance Expression Documentation
+//
+// The "chance" expression provides weighted random selection using
+// pseudorandomness. It allows you to define multiple outcomes with
+// specific percentage weights that determine relative probability.
+//
+// Important Notes:
+// - This uses pseudorandomness, not true probability guarantees
+// - The percentages represent weights, not statistical guarantees
+// - For guaranteed probability distributions (like RNG), use if statements
+//   with explicit random number generation instead
+//
+// Syntax:
+//     var <variable> = chance do
+//         <percentage>% -> <expression>
+//         <percentage>% -> <expression>
+//         // ... more cases ...
+//     end
+//
+// Rules:
+//     - Percentages represent relative weights, not exact probabilities
+//     - If percentages sum to exactly 100%, the "else" branch is redundant and not required
+//     - If percentages sum to less than 100%, an "else" branch is required
+//     - Percentages cannot exceed 100% in total
+//
+// Use cases:
+//     - Game mechanics where exact probability isn't critical
+//     - Random flavor text or variations
+//     - Weighted random selection for non-critical features
+
+@import println from "std.io"
+
+func rollChance() -> string do
+    var selected = chance do
+        70% -> "Common"
+        20% -> "Uncommon" 
+        10% -> "Rare"
+    end
+
+    ret selected
+end
+
+func rollChanceWithElse() -> string do
+    var selected = chance do
+        70% -> "Common"
+        20% -> "Uncommon"
+    else
+        "Rare"
+    end
+
+    ret selected
+end
+
+func main() -> i8 do
+    println(rollChance())
+    println(rollChance()) 
+    println(rollChance())
+    ret 0
+end

@@ -232,8 +232,8 @@ struct NamedImportExpr : public Expression {
         : module(std::move(mod)), imports(std::move(imp)) {}
 };
 
-struct NullLiteral : Expression {
-    NullLiteral() = default;
+struct NilLiteral : Expression {
+    NilLiteral() = default;
 };
 
 struct MaybeExpr : Expression {

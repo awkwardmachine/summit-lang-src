@@ -1,0 +1,15 @@
+@import println from "std.io"
+
+func main() -> i8 do
+    var string_maybe: maybe string = nil
+
+    // creates a scoped group
+    do string_maybe
+        println("String is valid")
+    else
+        println("Invalid string is nil")
+    end
+    // x is now out of scope
+
+    ret 0
+end

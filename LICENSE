@@ -1,25 +1,25 @@
-Copyright (c) 2025 awkwardmachine. All Rights Reserved.
+Copyright (c) 2025 awkwardmachine
 
-SOURCE-VIEWABLE LICENSE
+This program is free software: you can redistribute it and/or modify
+it under the terms of the GNU Affero General Public License as published
+by the Free Software Foundation, either version 3 of the License, or
+(at your option) any later version.
 
-Permission is granted to:
+This program is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+GNU Affero General Public License for more details.
 
-- View and study the source code for educational purposes
-- Use the code for personal, non-commercial projects
-- Reference the language design for learning
+You should have received a copy of the GNU Affero General Public License
+along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
-Strictly Prohibited:
+ADDITIONAL ATTRIBUTION REQUIREMENT:
 
-- Redistribution of the source code in original or modified form
-- Commercial use of the code or language implementation
-- Creating derivative works based on the language specification
-- Using the unique language concepts, syntax, or design in other projects
-- Offering the language as a service or commercial product
+Any public use, distribution, or derivative work must include 
+clear attribution in documentation and/or prominent notices:
 
-Attribution Required:
+"This project incorporates language concepts and design elements 
+from awkwardmachine's Summit Programming Language (c) 2025"
 
-Any public use, reference, or demonstration must include:
-"This project uses concepts from awkwardmachine's Summit Programming Language (c) 2025"
-
-All unique language ideas, syntax designs, and conceptual innovations are 
-the copyrighted intellectual property of awkwardmachine.
+Substantial use of Summit's unique language features, syntax, or 
+architecture must be acknowledged in project documentation.

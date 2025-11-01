@@ -395,6 +395,10 @@ std::string CodeGenerator::extractFunctionPath(const Expression* expr) {
 // main code generation entry point
 
 void CodeGenerator::generate(const Program& program) {
+    // Seed random number generator for chance statements
+    seedRandomGenerator();
+    
+    // Rest of your existing generate code...
     for (const auto& stmt : program.statements) {
         codegen(*stmt);
     }
@@ -751,12 +755,129 @@ llvm::Value* CodeGenerator::codegen(const Expression& expr) {
         return codegenAssignment(*e);
     } else if (auto* e = dynamic_cast<const BooleanLiteral*>(&expr)) {
         return codegenBooleanLiteral(*e);
+    } else if (auto* e = dynamic_cast<const ChanceExpr*>(&expr)) {
+        return codegenChanceExpr(*e);
     }
     throw std::runtime_error("Unknown expression type");
 }
 
-// literal codegen
+llvm::Value* CodeGenerator::codegenChanceExpr(const ChanceExpr& expr) {
+    llvm::Function* function = builder_->GetInsertBlock()->getParent();
 
+    // get or declare rand() function
+    llvm::FunctionType* rand_type = llvm::FunctionType::get(
+        llvm::Type::getInt32Ty(*context_), 
+        false
+    );
+    llvm::Function* rand_func = module_->getFunction("rand");
+    if (!rand_func) {
+        rand_func = llvm::Function::Create(
+            rand_type,
+            llvm::Function::ExternalLinkage,
+            "rand",
+            module_.get()
+        );
+    }
+    
+    // generate random integer between 0-99
+    llvm::Value* rand_val = builder_->CreateCall(rand_func);
+    llvm::Value* hundred = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*context_), 100);
+    llvm::Value* random_int = builder_->CreateSRem(rand_val, hundred, "rand_mod");
+    
+    // save the current block
+    llvm::BasicBlock* entry_block = builder_->GetInsertBlock();
+    
+    // create blocks
+    std::vector<llvm::BasicBlock*> branch_blocks;
+    llvm::BasicBlock* else_block = nullptr;
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(*context_, "chance_merge", function);
+    
+    for (size_t i = 0; i < expr.branches.size(); i++) {
+        branch_blocks.push_back(
+            llvm::BasicBlock::Create(*context_, "chance_expr_branch_" + std::to_string(i), function)
+        );
+    }
+    
+    if (expr.else_result) {
+        else_block = llvm::BasicBlock::Create(*context_, "chance_expr_else", function);
+    }
+    
+    // evaluate first branch to determine type
+    builder_->SetInsertPoint(branch_blocks[0]);
+    llvm::Value* branch_0_result = codegen(*expr.branches[0].result);
+    llvm::Type* result_type = branch_0_result->getType();
+    llvm::BasicBlock* branch_0_end = builder_->GetInsertBlock();
+    
+    // go back to entry block and create the alloca BEFORE any branching
+    builder_->SetInsertPoint(entry_block);
+    llvm::AllocaInst* result_var = builder_->CreateAlloca(result_type, nullptr, "chance_result");
+    
+    // build cascading checks
+    int cumulative = static_cast<int>(expr.branches[0].percentage);
+    llvm::Value* threshold = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*context_), cumulative);
+    llvm::Value* cond = builder_->CreateICmpSLT(random_int, threshold, "chance_cmp_0");
+    
+    llvm::BasicBlock* next_check;
+    if (expr.branches.size() > 1) {
+        next_check = llvm::BasicBlock::Create(*context_, "chance_expr_check_1", function);
+    } else if (else_block) {
+        next_check = else_block;
+    } else {
+        next_check = merge_block;
+    }
+    
+    builder_->CreateCondBr(cond, branch_blocks[0], next_check);
+    
+    // complete first branch
+    builder_->SetInsertPoint(branch_0_end);
+    builder_->CreateStore(branch_0_result, result_var);
+    builder_->CreateBr(merge_block);
+    
+    // handle remaining branches
+    for (size_t i = 1; i < expr.branches.size(); i++) {
+        builder_->SetInsertPoint(next_check);
+        
+        cumulative += static_cast<int>(expr.branches[i].percentage);
+        threshold = llvm::ConstantInt::get(llvm::Type::getInt32Ty(*context_), cumulative);
+        cond = builder_->CreateICmpSLT(random_int, threshold, "chance_cmp_" + std::to_string(i));
+        
+        if (i + 1 < expr.branches.size()) {
+            next_check = llvm::BasicBlock::Create(*context_, "chance_expr_check_" + std::to_string(i + 1), function);
+        } else if (else_block) {
+            next_check = else_block;
+        } else {
+            next_check = merge_block;
+        }
+        
+        builder_->CreateCondBr(cond, branch_blocks[i], next_check);
+        
+        builder_->SetInsertPoint(branch_blocks[i]);
+        llvm::Value* branch_result = codegen(*expr.branches[i].result);
+        if (branch_result->getType() != result_type) {
+            Type target_summit_type = getSummitTypeFromLLVMType(result_type);
+            branch_result = castValue(branch_result, result_type, target_summit_type);
+        }
+        builder_->CreateStore(branch_result, result_var);
+        builder_->CreateBr(merge_block);
+    }
+    
+    // handle else block
+    if (else_block) {
+        builder_->SetInsertPoint(else_block);
+        llvm::Value* else_val = codegen(*expr.else_result);
+        if (else_val->getType() != result_type) {
+            Type target_summit_type = getSummitTypeFromLLVMType(result_type);
+            else_val = castValue(else_val, result_type, target_summit_type);
+        }
+        builder_->CreateStore(else_val, result_var);
+        builder_->CreateBr(merge_block);
+    }
+    
+    builder_->SetInsertPoint(merge_block);
+    return builder_->CreateLoad(result_type, result_var, "chance_value");
+}
+
+// literal codegen
 llvm::Value* CodeGenerator::codegenBooleanLiteral(const BooleanLiteral& expr) {
     return llvm::ConstantInt::get(getLLVMType(Type::boolean()), expr.value ? 1 : 0);
 }
@@ -1021,6 +1142,141 @@ llvm::Value* CodeGenerator::codegenBinaryOp(const BinaryOp& expr) {
     throw std::runtime_error("Unknown binary operator: " + expr.op);
 }
 
+void CodeGenerator::codegenChanceStmt(const ChanceStmt& stmt) {
+    llvm::Function* function = builder_->GetInsertBlock()->getParent();
+    
+    // seed the random number generator on first use
+    if (!random_seeded_) {
+        // get or declare time() function
+        llvm::FunctionType* time_type = llvm::FunctionType::get(
+            llvm::Type::getInt64Ty(*context_),
+            {llvm::PointerType::getUnqual(*context_)},
+            false
+        );
+        llvm::Function* time_func = module_->getFunction("time");
+        if (!time_func) {
+            time_func = llvm::Function::Create(
+                time_type,
+                llvm::Function::ExternalLinkage,
+                "time",
+                module_.get()
+            );
+        }
+        
+        // get or declare srand() function
+        llvm::FunctionType* srand_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(*context_),
+            {llvm::Type::getInt32Ty(*context_)},
+            false
+        );
+        llvm::Function* srand_func = module_->getFunction("srand");
+        if (!srand_func) {
+            srand_func = llvm::Function::Create(
+                srand_type,
+                llvm::Function::ExternalLinkage,
+                "srand",
+                module_.get()
+            );
+        }
+        
+        // call time(NULL) to get current time
+        llvm::Value* null_ptr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*context_));
+        llvm::Value* time_val = builder_->CreateCall(time_func, {null_ptr});
+        
+        // truncate to i32 for srand
+        llvm::Value* seed = builder_->CreateTrunc(time_val, llvm::Type::getInt32Ty(*context_));
+        
+        builder_->CreateCall(srand_func, {seed});
+        
+        random_seeded_ = true;
+    }
+    
+    // get or declare rand() function from C stdlib
+    llvm::FunctionType* rand_type = llvm::FunctionType::get(
+        llvm::Type::getInt32Ty(*context_), 
+        false
+    );
+    llvm::Function* rand_func = module_->getFunction("rand");
+    if (!rand_func) {
+        rand_func = llvm::Function::Create(
+            rand_type,
+            llvm::Function::ExternalLinkage,
+            "rand",
+            module_.get()
+        );
+    }
+    
+    // call rand() and convert to 0-100 range
+    llvm::Value* rand_val = builder_->CreateCall(rand_func);
+    llvm::Value* rand_f64 = builder_->CreateSIToFP(rand_val, llvm::Type::getDoubleTy(*context_));
+    
+    // RAND_MAX is typically 2147483647
+    llvm::Value* rand_max = llvm::ConstantFP::get(llvm::Type::getDoubleTy(*context_), 2147483647.0);
+    llvm::Value* normalized = builder_->CreateFDiv(rand_f64, rand_max);
+    llvm::Value* percentage = builder_->CreateFMul(
+        normalized, 
+        llvm::ConstantFP::get(llvm::Type::getDoubleTy(*context_), 100.0)
+    );
+    
+    // create the blocks for each branch
+    std::vector<llvm::BasicBlock*> branch_blocks;
+    llvm::BasicBlock* else_block = nullptr;
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(*context_, "chance_end", function);
+    
+    for (size_t i = 0; i < stmt.branches.size(); i++) {
+        branch_blocks.push_back(
+            llvm::BasicBlock::Create(*context_, "chance_branch_" + std::to_string(i), function)
+        );
+    }
+    
+    if (stmt.else_result) {
+        else_block = llvm::BasicBlock::Create(*context_, "chance_else", function);
+    }
+    
+    // build the cascading if else chain
+    double cumulative = 0.0;
+    
+    for (size_t i = 0; i < stmt.branches.size(); i++) {
+        cumulative += stmt.branches[i].percentage;
+        
+        llvm::Value* threshold = llvm::ConstantFP::get(
+            llvm::Type::getDoubleTy(*context_), 
+            cumulative
+        );
+        llvm::Value* cond = builder_->CreateFCmpOLT(percentage, threshold, "chance_cmp");
+        
+        llvm::BasicBlock* next_check;
+        if (i + 1 < stmt.branches.size()) {
+            next_check = llvm::BasicBlock::Create(*context_, "chance_check_" + std::to_string(i + 1), function);
+        } else if (else_block) {
+            next_check = else_block;
+        } else {
+            next_check = merge_block;
+        }
+        
+        builder_->CreateCondBr(cond, branch_blocks[i], next_check);
+        
+        // fill in the branch block
+        builder_->SetInsertPoint(branch_blocks[i]);
+        codegen(*stmt.branches[i].result);
+        builder_->CreateBr(merge_block);
+        
+        // move to next check block
+        if (i + 1 < stmt.branches.size()) {
+            builder_->SetInsertPoint(next_check);
+        }
+    }
+    
+    // handle else block if present
+    if (else_block) {
+        builder_->SetInsertPoint(else_block);
+        codegen(*stmt.else_result);
+        builder_->CreateBr(merge_block);
+    }
+    
+    builder_->SetInsertPoint(merge_block);
+}
+
 void CodeGenerator::codegenIfStmt(const IfStmt& stmt) {
     llvm::Function* function = builder_->GetInsertBlock()->getParent();
     
@@ -1135,6 +1391,7 @@ void CodeGenerator::codegenIfStmt(const IfStmt& stmt) {
 }
 
 // function call codegen
+// function call codegen
 llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
     llvm::Function* callee = nullptr;
     std::string func_name;
@@ -1178,7 +1435,7 @@ llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
     if (!callee) {
         throw std::runtime_error("Unknown function: " + func_name);
     }
-
+    
     std::vector<llvm::Value*> args;
     
     for (size_t i = 0; i < expr.arguments.size(); i++) {
@@ -1197,7 +1454,6 @@ llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
     }
     
     // handle print function overloading
-    // this is kinda messy but it works for figuring out which print variant to call
     if (!args.empty()) {
         bool is_print_func = (actual_func_name == "summit_io_println" || 
                              actual_func_name == "summit_io_print" ||
@@ -1343,6 +1599,24 @@ llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
     }
     
     return builder_->CreateCall(callee, args);
+}
+
+// Simple random seed generation
+void CodeGenerator::generateRandomSeed() {
+    llvm::Function* srand_func = module_->getFunction("srand");
+    llvm::Function* time_func = module_->getFunction("time");
+    
+    if (!srand_func || !time_func) return;
+    
+    // Call time(NULL) to get current time
+    llvm::Value* null_ptr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*context_));
+    llvm::Value* time_val = builder_->CreateCall(time_func, {null_ptr});
+    
+    // Truncate to i32 for srand
+    llvm::Value* seed = builder_->CreateTrunc(time_val, llvm::Type::getInt32Ty(*context_));
+    
+    // Call srand with the seed
+    builder_->CreateCall(srand_func, {seed});
 }
 
 // import statement codegen
@@ -1589,6 +1863,8 @@ void CodeGenerator::codegen(const Statement& stmt) {
         codegenUsingImportStmt(*s);
     } else if (auto* s = dynamic_cast<const IfStmt*>(&stmt)) {
         codegenIfStmt(*s);
+    } else if (auto* s = dynamic_cast<const ChanceStmt*>(&stmt)) {
+        codegenChanceStmt(*s);
     } else {
         throw std::runtime_error("Unknown statement type");
     }
@@ -1843,6 +2119,45 @@ void CodeGenerator::codegenFunctionDecl(const FunctionDecl& stmt) {
 
     llvm::BasicBlock* entry = llvm::BasicBlock::Create(*context_, "entry", function);
     builder_->SetInsertPoint(entry);
+
+    if (stmt.name == "main") {
+        // Seed random number generator once at program start
+        llvm::FunctionType* time_type = llvm::FunctionType::get(
+            llvm::Type::getInt64Ty(*context_),
+            {llvm::PointerType::getUnqual(*context_)},
+            false
+        );
+        llvm::Function* time_func = module_->getFunction("time");
+        if (!time_func) {
+            time_func = llvm::Function::Create(
+                time_type,
+                llvm::Function::ExternalLinkage,
+                "time",
+                module_.get()
+            );
+        }
+        
+        llvm::FunctionType* srand_type = llvm::FunctionType::get(
+            llvm::Type::getVoidTy(*context_),
+            {llvm::Type::getInt32Ty(*context_)},
+            false
+        );
+        llvm::Function* srand_func = module_->getFunction("srand");
+        if (!srand_func) {
+            srand_func = llvm::Function::Create(
+                srand_type,
+                llvm::Function::ExternalLinkage,
+                "srand",
+                module_.get()
+            );
+        }
+        
+        // Call time(NULL) and srand() at the start of main
+        llvm::Value* null_ptr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*context_));
+        llvm::Value* time_val = builder_->CreateCall(time_func, {null_ptr});
+        llvm::Value* seed = builder_->CreateTrunc(time_val, llvm::Type::getInt32Ty(*context_));
+        builder_->CreateCall(srand_func, {seed});
+    }
     
     // save current state
     llvm::Function* prev_func = current_function_;
@@ -1944,6 +2259,34 @@ void CodeGenerator::codegenExprStmt(const ExpressionStmt& stmt) {
     }
     
     codegen(*stmt.expression);
+}
+
+void CodeGenerator::seedRandomGenerator() {
+    // declare srand(unsigned int seed)
+    llvm::FunctionType* srand_type = llvm::FunctionType::get(
+        llvm::Type::getVoidTy(*context_),
+        {llvm::Type::getInt32Ty(*context_)},
+        false
+    );
+    llvm::Function::Create(
+        srand_type,
+        llvm::Function::ExternalLinkage,
+        "srand",
+        module_.get()
+    );
+    
+    // declare time(time_t* t) 
+    llvm::FunctionType* time_type = llvm::FunctionType::get(
+        llvm::Type::getInt64Ty(*context_),
+        {llvm::PointerType::getUnqual(*context_)},
+        false
+    );
+    llvm::Function::Create(
+        time_type,
+        llvm::Function::ExternalLinkage,
+        "time",
+        module_.get()
+    );
 }
 
 // helper getters for common llvm types

@@ -81,6 +81,7 @@ private:
     llvm::Value* codegenAssignment(const AssignmentExpr& expr);
     llvm::Value* codegenImport(const ImportExpr& expr);
     llvm::Value* codegenNamedImport(const NamedImportExpr& expr);
+    llvm::Value* codegenChanceExpr(const ChanceExpr& expr);
     
     // statement codegen
     void codegen(const Statement& stmt);
@@ -91,6 +92,7 @@ private:
     void codegenUsingStmt(const UsingStmt& stmt);
     void codegenUsingImportStmt(const UsingImportStmt& stmt);
     void codegenIfStmt(const IfStmt& stmt);
+    void codegenChanceStmt(const ChanceStmt& stmt);
     
     // type system utilities
     llvm::Type* getLLVMType(const Type& type);
@@ -112,6 +114,10 @@ private:
     llvm::Type* getVoidType();
     llvm::Type* getInt8PtrType();
     llvm::Function* getFunction(const std::string& name);
+
+    void seedRandomGenerator();
+    void generateRandomSeed();
+    bool random_seeded_ = true;
 };
 
 }

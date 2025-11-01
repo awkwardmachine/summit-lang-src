@@ -50,6 +50,7 @@ private:
     std::unique_ptr<Statement> usingDeclaration();
     std::unique_ptr<Statement> expressionStatement();
     std::unique_ptr<Statement> ifStatement();
+    std::unique_ptr<Statement> chanceStatement();
     
     // expression parsing (precedence climbing)
     std::unique_ptr<Expression> expression();

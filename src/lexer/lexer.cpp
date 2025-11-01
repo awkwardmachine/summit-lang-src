@@ -27,6 +27,9 @@ const std::unordered_map<std::string, TokenType> Lexer::keywords_ = {
     {"as", TokenType::AS},
     {"true", TokenType::TRUE},
     {"false", TokenType::FALSE},
+    {"chance", TokenType::CHANCE},
+    {"match", TokenType::MATCH},
+    {"do", TokenType::DO},
     
     {"i8", TokenType::I8},
     {"i16", TokenType::I16},
@@ -141,6 +144,9 @@ void Lexer::scanToken() {
             tokens_.emplace_back(TokenType::NEWLINE, "\\n", line_, start_col);
             line_++;
             column_ = 1;
+            break;
+        case '%': 
+            tokens_.emplace_back(TokenType::PERCENT, "%", line_, start_col); 
             break;
         default:
             // check for numbers, identifiers, or invalid chars

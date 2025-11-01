@@ -414,6 +414,7 @@ std::unique_ptr<Statement> Parser::functionDeclaration() {
         return_type = Type::inferred();
     }
     
+    skipNewlines();
     consume(TokenType::DO, "Expected 'do' after function signature");
     skipNewlines();
     
@@ -458,7 +459,81 @@ std::unique_ptr<Statement> Parser::functionDeclaration() {
 std::unique_ptr<Statement> Parser::statement() {
     if (match(TokenType::IF)) return ifStatement();
     if (match(TokenType::RET)) return returnStatement();
+    if (match(TokenType::CHANCE)) return chanceStatement();
     return expressionStatement();
+}
+
+std::unique_ptr<Statement> Parser::chanceStatement() {
+    consume(TokenType::DO, "Expected 'do' after 'chance'");
+    skipNewlines();
+    
+    std::vector<ChanceBranch> branches;
+    double total_percentage = 0.0;
+    
+    // parse chance branches
+    while (!check(TokenType::ELSE) && !check(TokenType::END) && !isAtEnd()) {
+        skipNewlines();
+        if (check(TokenType::ELSE) || check(TokenType::END)) break;
+
+        Token percent_token = advance();
+        if (percent_token.type != TokenType::NUMBER) {
+            throw std::runtime_error("Expected percentage number at line " + std::to_string(percent_token.line));
+        }
+        
+        double percentage;
+        if (percent_token.isRegularInteger()) {
+            percentage = static_cast<double>(percent_token.getIntValue());
+        } else if (percent_token.isFloat()) {
+            percentage = percent_token.getFloatValue();
+        } else {
+            throw std::runtime_error("Invalid percentage format at line " + std::to_string(percent_token.line));
+        }
+        
+        consume(TokenType::PERCENT, "Expected '%' after percentage");
+        
+        total_percentage += percentage;
+        
+        consume(TokenType::ARROW, "Expected '->' after percentage");
+
+        auto result = expression();
+        
+        branches.push_back(ChanceBranch(percentage, std::move(result)));
+        skipNewlines();
+    }
+    
+    // parse optional else branch
+    std::unique_ptr<Expression> else_result = nullptr;
+    if (match(TokenType::ELSE)) {
+        skipNewlines();
+        
+        if (match(TokenType::RET)) {
+            else_result = expression();
+        } else {
+            else_result = expression();
+        }
+        
+        skipNewlines();
+    }
+    
+    consume(TokenType::END, "Expected 'end' after chance statement");
+    
+    if (else_result == nullptr) {
+        if (std::abs(total_percentage - 100.0) > 0.001) {
+            throw std::runtime_error(
+                "Chance percentages must add up to 100% (got " + 
+                std::to_string(total_percentage) + "%) or provide an else branch"
+            );
+        }
+    } else {
+        if (total_percentage > 100.0) {
+            throw std::runtime_error(
+                "Chance percentages cannot exceed 100% (got " + 
+                std::to_string(total_percentage) + "%)"
+            );
+        }
+    }
+    
+    return std::make_unique<ChanceStmt>(std::move(branches), std::move(else_result));
 }
 
 std::unique_ptr<Statement> Parser::returnStatement() {
@@ -672,6 +747,72 @@ std::unique_ptr<Expression> Parser::primary() {
     
     if (match(TokenType::IDENTIFIER)) {
         return std::make_unique<Identifier>(previous().lexeme);
+    }
+
+    if (match(TokenType::CHANCE)) {
+        consume(TokenType::DO, "Expected 'do' after 'chance'");
+        skipNewlines();
+        
+        std::vector<ChanceBranch> branches;
+        double total_percentage = 0.0;
+        
+        while (!check(TokenType::ELSE) && !check(TokenType::END) && !isAtEnd()) {
+            skipNewlines();
+            if (check(TokenType::ELSE) || check(TokenType::END)) break;
+            
+            Token percent_token = advance();
+            if (percent_token.type != TokenType::NUMBER) {
+                throw std::runtime_error("Expected percentage number at line " + std::to_string(percent_token.line));
+            }
+            
+            double percentage;
+            if (percent_token.isRegularInteger()) {
+                percentage = static_cast<double>(percent_token.getIntValue());
+            } else if (percent_token.isFloat()) {
+                percentage = percent_token.getFloatValue();
+            } else {
+                throw std::runtime_error("Invalid percentage format at line " + std::to_string(percent_token.line));
+            }
+            
+            consume(TokenType::PERCENT, "Expected '%' after percentage");
+            total_percentage += percentage;
+            consume(TokenType::ARROW, "Expected '->' after percentage");
+            
+            auto result = expression();
+            branches.push_back(ChanceBranch(percentage, std::move(result)));
+            skipNewlines();
+        }
+        
+        std::unique_ptr<Expression> else_result = nullptr;
+        if (match(TokenType::ELSE)) {
+            skipNewlines();
+            if (match(TokenType::RET)) {
+                else_result = expression();
+            } else {
+                else_result = expression();
+            }
+            skipNewlines();
+        }
+        
+        consume(TokenType::END, "Expected 'end' after chance expression");
+        
+        if (else_result == nullptr) {
+            if (std::abs(total_percentage - 100.0) > 0.001) {
+                throw std::runtime_error(
+                    "Chance percentages must add up to 100% (got " + 
+                    std::to_string(total_percentage) + "%) or provide an else branch"
+                );
+            }
+        } else {
+            if (total_percentage > 100.0) {
+                throw std::runtime_error(
+                    "Chance percentages cannot exceed 100% (got " + 
+                    std::to_string(total_percentage) + "%)"
+                );
+            }
+        }
+        
+        return std::make_unique<ChanceExpr>(std::move(branches), std::move(else_result));
     }
     
     // grouped expressions

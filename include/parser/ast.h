@@ -242,6 +242,31 @@ struct IfStmt : Statement {
         : condition(std::move(cond)), then_branch(std::move(then_body)) {}
 };
 
+// chance statements
+struct ChanceBranch {
+    double percentage;
+    std::unique_ptr<Expression> result;
+    
+    ChanceBranch(double pct, std::unique_ptr<Expression> res)
+        : percentage(pct), result(std::move(res)) {}
+}; 
+
+struct ChanceStmt : Statement {
+    std::vector<ChanceBranch> branches;
+    std::unique_ptr<Expression> else_result;
+    
+    ChanceStmt(std::vector<ChanceBranch> br, std::unique_ptr<Expression> else_res = nullptr)
+        : branches(std::move(br)), else_result(std::move(else_res)) {}
+};
+
+struct ChanceExpr : Expression {
+    std::vector<ChanceBranch> branches;
+    std::unique_ptr<Expression> else_result;
+    
+    ChanceExpr(std::vector<ChanceBranch> br, std::unique_ptr<Expression> else_res = nullptr)
+        : branches(std::move(br)), else_result(std::move(else_res)) {}
+};
+
 // import statements
 struct UsingStmt : public Statement {
     std::string module_alias;

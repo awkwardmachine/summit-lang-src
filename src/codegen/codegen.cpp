@@ -1662,19 +1662,16 @@ llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
     }
     
     std::string actual_func_name = callee->getName().str();
-    
-    // Special handling for print functions with maybe types - CHECK BEFORE codegen
+
     bool is_print_func = (actual_func_name == "summit_io_println" || 
                          actual_func_name == "summit_io_print" ||
                          actual_func_name.find("std.io.println") != std::string::npos || 
                          actual_func_name.find("std.io.print") != std::string::npos);
     
     if (is_print_func && !expr.arguments.empty()) {
-        // Check if the argument is a maybe type BEFORE calling codegen
         if (auto* id = dynamic_cast<const Identifier*>(expr.arguments[0].get())) {
             auto type_it = variable_types_.find(id->name);
             if (type_it != variable_types_.end() && type_it->second.kind == Type::Kind::MAYBE) {
-                // This is a maybe type - handle it specially
                 llvm::Value* maybe_alloca = named_values_[id->name];
                 llvm::Type* maybe_type = llvm::cast<llvm::AllocaInst>(maybe_alloca)->getAllocatedType();
                 return extractMaybeValueForPrint(maybe_alloca, maybe_type, type_it->second);
@@ -1682,7 +1679,6 @@ llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
         }
     }
     
-    // Normal argument processing
     std::vector<llvm::Value*> args;
     
     for (size_t i = 0; i < expr.arguments.size(); i++) {
@@ -2103,6 +2099,8 @@ void CodeGenerator::codegen(const Statement& stmt) {
         codegenIfStmt(*s);
     } else if (auto* s = dynamic_cast<const ChanceStmt*>(&stmt)) {
         codegenChanceStmt(*s);
+    } else if (auto* s = dynamic_cast<const DoStmt*>(&stmt)) {
+        codegenDoStmt(*s);
     } else {
         throw std::runtime_error("Unknown statement type");
     }
@@ -2482,6 +2480,122 @@ llvm::Value* CodeGenerator::extractMaybeValueForPrint(llvm::Value* maybe_alloca,
     builder_->SetInsertPoint(merge_block);
     
     return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*context_), 0);
+}
+
+void CodeGenerator::codegenDoStmt(const DoStmt& stmt) {
+    llvm::Function* function = builder_->GetInsertBlock()->getParent();
+
+    if (auto* id = dynamic_cast<const Identifier*>(stmt.value.get())) {
+        llvm::Value* maybe_alloca = named_values_[id->name];
+        if (!maybe_alloca) {
+            throw std::runtime_error("Variable not found: " + id->name);
+        }
+        
+        auto* alloca_inst = llvm::dyn_cast<llvm::AllocaInst>(maybe_alloca);
+        if (!alloca_inst) {
+            throw std::runtime_error("Do statement requires a variable");
+        }
+        
+        llvm::Type* maybe_type = alloca_inst->getAllocatedType();
+        
+        if (!maybe_type->isStructTy()) {
+            throw std::runtime_error("Do statement requires a maybe type value");
+        }
+        
+        llvm::Value* has_value_ptr = builder_->CreateStructGEP(
+            maybe_type,
+            maybe_alloca,
+            0,
+            "has_value_ptr"
+        );
+        llvm::Value* has_value = builder_->CreateLoad(
+            llvm::Type::getInt1Ty(*context_),
+            has_value_ptr,
+            "has_value"
+        );
+        
+        // create blocks
+        llvm::BasicBlock* then_block = llvm::BasicBlock::Create(*context_, "do_then", function);
+        llvm::BasicBlock* else_block = llvm::BasicBlock::Create(*context_, "do_else", function);
+        llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(*context_, "do_merge", function);
+        
+        builder_->CreateCondBr(has_value, then_block, else_block);
+        
+        // generate then branch
+        builder_->SetInsertPoint(then_block);
+        for (const auto& s : stmt.then_branch) {
+            codegen(*s);
+        }
+        if (!builder_->GetInsertBlock()->getTerminator()) {
+            builder_->CreateBr(merge_block);
+        }
+        
+        // generate else branch
+        builder_->SetInsertPoint(else_block);
+        for (const auto& s : stmt.else_branch) {
+            codegen(*s);
+        }
+        if (!builder_->GetInsertBlock()->getTerminator()) {
+            builder_->CreateBr(merge_block);
+        }
+        
+        builder_->SetInsertPoint(merge_block);
+        
+    } else if (auto* func_call = dynamic_cast<const FunctionCall*>(stmt.value.get())) {
+        // handle function call that returns a maybe type
+        llvm::Value* maybe_val = codegen(*func_call);
+        
+        if (!maybe_val->getType()->isStructTy()) {
+            throw std::runtime_error("Do statement requires a maybe type value");
+        }
+        
+        // store the value in an alloca so we can use GEP on it
+        llvm::AllocaInst* temp_alloca = builder_->CreateAlloca(maybe_val->getType(), nullptr, "do_temp");
+        builder_->CreateStore(maybe_val, temp_alloca);
+        
+        // extract the has_value flag using GEP on the alloca
+        llvm::Value* has_value_ptr = builder_->CreateStructGEP(
+            maybe_val->getType(),
+            temp_alloca,
+            0,
+            "has_value_ptr"
+        );
+        llvm::Value* has_value = builder_->CreateLoad(
+            llvm::Type::getInt1Ty(*context_),
+            has_value_ptr,
+            "has_value"
+        );
+        
+        // create blocks
+        llvm::BasicBlock* then_block = llvm::BasicBlock::Create(*context_, "do_then", function);
+        llvm::BasicBlock* else_block = llvm::BasicBlock::Create(*context_, "do_else", function);
+        llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(*context_, "do_merge", function);
+        
+        builder_->CreateCondBr(has_value, then_block, else_block);
+        
+        // generate then branch
+        builder_->SetInsertPoint(then_block);
+        for (const auto& s : stmt.then_branch) {
+            codegen(*s);
+        }
+        if (!builder_->GetInsertBlock()->getTerminator()) {
+            builder_->CreateBr(merge_block);
+        }
+        
+        // generate else branch
+        builder_->SetInsertPoint(else_block);
+        for (const auto& s : stmt.else_branch) {
+            codegen(*s);
+        }
+        if (!builder_->GetInsertBlock()->getTerminator()) {
+            builder_->CreateBr(merge_block);
+        }
+        
+        builder_->SetInsertPoint(merge_block);
+        
+    } else {
+        throw std::runtime_error("Do statement requires an identifier or function call");
+    }
 }
 
 void CodeGenerator::codegenFunctionDecl(const FunctionDecl& stmt) {

@@ -301,6 +301,19 @@ struct IfStmt : Statement {
         : condition(std::move(cond)), then_branch(std::move(then_body)) {}
 };
 
+struct DoStmt : Statement {
+    std::unique_ptr<Expression> value;
+    std::vector<std::unique_ptr<Statement>> then_branch;
+    std::vector<std::unique_ptr<Statement>> else_branch;
+    
+    DoStmt(std::unique_ptr<Expression> val,
+           std::vector<std::unique_ptr<Statement>> then_body,
+           std::vector<std::unique_ptr<Statement>> else_body)
+        : value(std::move(val)), 
+          then_branch(std::move(then_body)),
+          else_branch(std::move(else_body)) {}
+};
+
 // chance statements
 struct ChanceBranch {
     double percentage;

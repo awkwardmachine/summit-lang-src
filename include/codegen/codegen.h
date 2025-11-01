@@ -95,6 +95,7 @@ private:
     void codegenUsingImportStmt(const UsingImportStmt& stmt);
     void codegenIfStmt(const IfStmt& stmt);
     void codegenChanceStmt(const ChanceStmt& stmt);
+    void codegenDoStmt(const DoStmt& stmt);
     
     // type system utilities
     llvm::Type* getLLVMType(const Type& type);

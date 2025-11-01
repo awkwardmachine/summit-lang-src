@@ -66,7 +66,7 @@ void Parser::consume(TokenType type, const std::string& message) {
 
 // type parsing
 std::optional<Type> Parser::parseType() {
-    // Check for maybe keyword
+    // check for maybe keyword
     if (match(TokenType::MAYBE)) {
         auto inner = parseType();
         if (!inner) {
@@ -253,6 +253,37 @@ std::unique_ptr<Statement> Parser::ifStatement() {
     
     consume(TokenType::END, "Expected 'end' after if statement");
     return if_stmt;
+}
+
+std::unique_ptr<Statement> Parser::doStatement() {
+    auto value = expression();
+    
+    skipNewlines();
+    
+    // parse then branch
+    std::vector<std::unique_ptr<Statement>> then_branch;
+    while (!check(TokenType::END) && !check(TokenType::ELSE) && !isAtEnd()) {
+        skipNewlines();
+        if (check(TokenType::END) || check(TokenType::ELSE)) break;
+        then_branch.push_back(declaration());
+        skipNewlines();
+    }
+    
+    // parse th optional else branch
+    std::vector<std::unique_ptr<Statement>> else_branch;
+    if (match(TokenType::ELSE)) {
+        skipNewlines();
+        while (!check(TokenType::END) && !isAtEnd()) {
+            skipNewlines();
+            if (check(TokenType::END)) break;
+            else_branch.push_back(declaration());
+            skipNewlines();
+        }
+    }
+    
+    consume(TokenType::END, "Expected 'end' after do statement");
+    
+    return std::make_unique<DoStmt>(std::move(value), std::move(then_branch), std::move(else_branch));
 }
 
 // declaration parsing
@@ -452,10 +483,9 @@ std::unique_ptr<Statement> Parser::functionDeclaration() {
     
     consume(TokenType::END, "Expected 'end' after function body");
 
-    // Updated validation: allow maybe types to not have explicit returns
     if (return_type.has_value() && 
         return_type.value().kind != Type::Kind::INFERRED && 
-        return_type.value().kind != Type::Kind::MAYBE &&  // Allow maybe types without return
+        return_type.value().kind != Type::Kind::MAYBE &&
         !has_return_statement) {
         throw std::runtime_error(
             "Function '" + name.lexeme + "' with return type '" + 
@@ -474,6 +504,7 @@ std::unique_ptr<Statement> Parser::statement() {
     if (match(TokenType::IF)) return ifStatement();
     if (match(TokenType::RET)) return returnStatement();
     if (match(TokenType::CHANCE)) return chanceStatement();
+    if (match(TokenType::DO)) return doStatement();
     return expressionStatement();
 }
 

@@ -1,12 +1,45 @@
+@import println from "std.io"
 
+func findUser(name: string) -> maybe bool do
+    if name == "Alice" then
+        ret true
+    elif name == "Bob" then
+        ret false
+    end
+    ret null
+end
+
+func divide(a: i32, b: i32) -> maybe i32 do
+    if b == 0 then
+        ret null
+    else
+        ret a / b
+    end
+end
 
 func main() -> i8 do
-    var x = 2
-
-    if x == 2 do
-        @import("std.io").println("It is 2")
-    elif x == 3 then
-
+    var x: maybe i8 = null
+    var y: maybe i8 = 42
+    println(x)
+    println(y)
+    
+    var user1: maybe bool = findUser("Alice") do
+        println("Alice is found")
+    else
+        println("Alice not found")
     end
+    
+    var user2: maybe bool = findUser("Unknown") do
+        println("User is found")
+    else
+        println("User not found")
+    end
+    
+    var result1: maybe i32 = divide(10, 2)
+    var result2: maybe i32 = divide(10, 0)
+    
+    println(result1)
+    println(result2)
+    
     ret 0
 end

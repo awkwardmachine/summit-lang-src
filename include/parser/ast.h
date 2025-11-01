@@ -25,14 +25,38 @@ struct Type {
         BOOL,
         STRING,
         VOID,
-        INFERRED
+        INFERRED,
+        MAYBE
     };
     
     Kind kind;
+    std::unique_ptr<Type> inner_type;
     
-    Type() : kind(Kind::INFERRED) {}
+    Type() : kind(Kind::INFERRED), inner_type(nullptr) {}
     
-    explicit Type(Kind k) : kind(k) {}
+    explicit Type(Kind k) : kind(k), inner_type(nullptr) {}
+ 
+    Type(const Type& other) : kind(other.kind) {
+        if (other.inner_type) {
+            inner_type = std::make_unique<Type>(*other.inner_type);
+        }
+    }
+    
+    Type(Type&& other) noexcept = default;
+    
+    Type& operator=(const Type& other) {
+        if (this != &other) {
+            kind = other.kind;
+            if (other.inner_type) {
+                inner_type = std::make_unique<Type>(*other.inner_type);
+            } else {
+                inner_type.reset();
+            }
+        }
+        return *this;
+    }
+    
+    Type& operator=(Type&& other) noexcept = default;
     
     // factory methods for creating types
     static Type i8() { return Type(Kind::I8); }
@@ -49,13 +73,26 @@ struct Type {
     static Type string() { return Type(Kind::STRING); }
     static Type void_type() { return Type(Kind::VOID); }
     static Type inferred() { return Type(Kind::INFERRED); }
+    
+    static Type maybe(Type inner) {
+        Type t(Kind::MAYBE);
+        t.inner_type = std::make_unique<Type>(std::move(inner));
+        return t;
+    }
 
     bool operator==(const Type& other) const {
-        return kind == other.kind;
+        if (kind != other.kind) return false;
+        if (kind == Kind::MAYBE && other.kind == Kind::MAYBE) {
+            if (inner_type && other.inner_type) {
+                return *inner_type == *other.inner_type;
+            }
+            return !inner_type && !other.inner_type;
+        }
+        return true;
     }
     
     bool operator!=(const Type& other) const {
-        return kind != other.kind;
+        return !(*this == other);
     }
     
     std::string toString() const {
@@ -74,10 +111,16 @@ struct Type {
             case Kind::STRING: return "string";
             case Kind::VOID: return "void";
             case Kind::INFERRED: return "<inferred>";
+            case Kind::MAYBE:
+                if (inner_type) {
+                    return "maybe " + inner_type->toString();
+                }
+                return "maybe";
             default: return "<unknown>";
         }
     }
 };
+
 
 // literal expressions
 struct NumberLiteral : Expression {
@@ -87,7 +130,6 @@ struct NumberLiteral : Expression {
     explicit NumberLiteral(double v) : value(v) {}
     explicit NumberLiteral(const std::string& largeInt) : value(largeInt) {}
     
-    // helpers for checking what kind of number we have
     bool isLargeInteger() const {
         return std::holds_alternative<std::string>(value);
     }
@@ -188,6 +230,23 @@ struct NamedImportExpr : public Expression {
     
     NamedImportExpr(std::string mod, std::vector<std::string> imp)
         : module(std::move(mod)), imports(std::move(imp)) {}
+};
+
+struct NullLiteral : Expression {
+    NullLiteral() = default;
+};
+
+struct MaybeExpr : Expression {
+    std::unique_ptr<Expression> value;
+    std::vector<std::unique_ptr<Statement>> then_branch;
+    std::vector<std::unique_ptr<Statement>> else_branch;
+    
+    MaybeExpr(std::unique_ptr<Expression> val,
+              std::vector<std::unique_ptr<Statement>> then_body,
+              std::vector<std::unique_ptr<Statement>> else_body)
+        : value(std::move(val)), 
+          then_branch(std::move(then_body)),
+          else_branch(std::move(else_body)) {}
 };
 
 // statements

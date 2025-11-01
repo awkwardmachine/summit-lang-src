@@ -82,6 +82,8 @@ private:
     llvm::Value* codegenImport(const ImportExpr& expr);
     llvm::Value* codegenNamedImport(const NamedImportExpr& expr);
     llvm::Value* codegenChanceExpr(const ChanceExpr& expr);
+    llvm::Value* codegenNullLiteral(const NullLiteral& expr);
+    llvm::Value* codegenMaybeExpr(const MaybeExpr& expr);
     
     // statement codegen
     void codegen(const Statement& stmt);
@@ -115,9 +117,17 @@ private:
     llvm::Type* getInt8PtrType();
     llvm::Function* getFunction(const std::string& name);
 
+    // seed helpers
     void seedRandomGenerator();
     void generateRandomSeed();
     bool random_seeded_ = true;
+
+    // maybe function helpers
+    bool isMaybeValue(llvm::Value* val, const Expression* expr);
+    llvm::Value* extractMaybeValueForPrint(llvm::Value* maybe_val, 
+                                           llvm::Type* maybe_type,
+                                           const Type& summit_type);
+
 };
 
 }

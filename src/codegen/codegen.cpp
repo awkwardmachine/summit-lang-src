@@ -133,6 +133,20 @@ CodeGenerator::~CodeGenerator() = default;
 // type conversion helpers
 // converting between summit's type system and llvm's
 llvm::Type* CodeGenerator::getLLVMType(const Type& type) {
+    if (type.kind == Type::Kind::MAYBE) {
+        if (!type.inner_type) {
+            throw std::runtime_error("Maybe type must have an inner type");
+        }
+        
+        llvm::Type* inner_llvm = getLLVMType(*type.inner_type);
+        std::vector<llvm::Type*> fields = {
+            llvm::Type::getInt1Ty(*context_),
+            inner_llvm
+        };
+        
+        return llvm::StructType::get(*context_, fields);
+    }
+    
     switch (type.kind) {
         case Type::Kind::I8:
         case Type::Kind::U8:
@@ -159,7 +173,6 @@ llvm::Type* CodeGenerator::getLLVMType(const Type& type) {
         case Type::Kind::INFERRED:
             return getInt64Type();
         default:
-            // this should never happen, but you know how it goes...
             throw std::runtime_error("Unknown type");
     }
 }
@@ -206,16 +219,34 @@ bool CodeGenerator::isSignedType(const Type& type) {
 }
 
 Type CodeGenerator::getSummitTypeFromLLVMType(llvm::Type* type) {
-    // reverse lookup from llvm types back to summit types
+    //handle struct types (maybe types for now)
+    if (type->isStructTy()) {
+        llvm::StructType* struct_ty = llvm::cast<llvm::StructType>(type);
+
+        if (struct_ty->getNumElements() == 2) {
+            llvm::Type* first_elem = struct_ty->getElementType(0);
+            llvm::Type* second_elem = struct_ty->getElementType(1);
+            
+            if (first_elem->isIntegerTy(1)) {
+                Type inner_type = getSummitTypeFromLLVMType(second_elem);
+                return Type::maybe(inner_type);
+            }
+        }
+        
+        throw std::runtime_error("Unknown struct type in getSummitTypeFromLLVMType");
+    }
+    
+    // original type handling
+    if (type->isIntegerTy(1)) return Type::boolean();
     if (type->isIntegerTy(8)) return Type::i8();
     if (type->isIntegerTy(16)) return Type::i16();
     if (type->isIntegerTy(32)) return Type::i32();
     if (type->isIntegerTy(64)) return Type::i64();
     if (type->isFloatTy()) return Type::f32();
     if (type->isDoubleTy()) return Type::f64();
-    if (type->isIntegerTy(1)) return Type::boolean();
     if (type->isPointerTy()) return Type::string();
     if (type->isVoidTy()) return Type::void_type();
+    
     return Type::inferred();
 }
 
@@ -226,6 +257,38 @@ llvm::Value* CodeGenerator::castValue(llvm::Value* value, llvm::Type* target_typ
         return value;
     }
 
+    // handle casting to maybe type, wrap the value in a maybe struct
+    if (target_summit_type.kind == Type::Kind::MAYBE && target_type->isStructTy()) {
+        if (!target_summit_type.inner_type) {
+            throw std::runtime_error("Maybe type must have an inner type");
+        }
+
+        llvm::Type* inner_llvm_type = getLLVMType(*target_summit_type.inner_type);
+
+        llvm::Value* casted_value = value;
+        if (source_type != inner_llvm_type) {
+            casted_value = castValue(value, inner_llvm_type, *target_summit_type.inner_type);
+        }
+
+        llvm::Value* maybe_val = llvm::UndefValue::get(target_type);
+
+        maybe_val = builder_->CreateInsertValue(
+            maybe_val,
+            llvm::ConstantInt::get(llvm::Type::getInt1Ty(*context_), 1),
+            {0},
+            "maybe_has_value"
+        );
+
+        maybe_val = builder_->CreateInsertValue(
+            maybe_val,
+            casted_value,
+            {1},
+            "maybe_value"
+        );
+        
+        return maybe_val;
+    }
+
     // integer to integer casts
     if (target_type->isIntegerTy() && source_type->isIntegerTy()) {
         unsigned source_bits = source_type->getIntegerBitWidth();
@@ -234,12 +297,10 @@ llvm::Value* CodeGenerator::castValue(llvm::Value* value, llvm::Type* target_typ
         bool is_signed = isSignedType(target_summit_type);
         
         if (target_bits > source_bits) {
-            // widening cast, need sign or zero extension
             return is_signed ? 
                 builder_->CreateSExt(value, target_type) :
                 builder_->CreateZExt(value, target_type);
         } else if (target_bits < source_bits) {
-            // narrowing, just truncate
             return builder_->CreateTrunc(value, target_type);
         } else {
             return builder_->CreateIntCast(value, target_type, is_signed);
@@ -287,7 +348,7 @@ llvm::Value* CodeGenerator::castValue(llvm::Value* value, llvm::Type* target_typ
 }
 
 std::string CodeGenerator::getTypeString(llvm::Type* type) {
-    // get a readable name for error messages
+    //get a readable name for error messages
     if (type->isIntegerTy(1)) return "bool";
     if (type->isIntegerTy(8)) return "i8";
     if (type->isIntegerTy(16)) return "i16";
@@ -301,9 +362,8 @@ std::string CodeGenerator::getTypeString(llvm::Type* type) {
 }
 
 // module and import system stuff
-
 llvm::Function* CodeGenerator::getOrDeclareStdlibFunction(const std::string& full_path) {
-    // check if we already have this function
+    //check if we already have this function
     auto it = stdlib_functions_.find(full_path);
     if (it != stdlib_functions_.end()) {
         return it->second;
@@ -735,6 +795,8 @@ llvm::Value* CodeGenerator::codegen(const Expression& expr) {
         return codegenNumberLiteral(*e);
     } else if (auto* e = dynamic_cast<const StringLiteral*>(&expr)) {
         return codegenStringLiteral(*e);
+    } else if (auto* e = dynamic_cast<const NullLiteral*>(&expr)) {
+        return codegenNullLiteral(*e);
     } else if (auto* e = dynamic_cast<const Identifier*>(&expr)) {
         return codegenIdentifier(*e);
     } else if (auto* e = dynamic_cast<const MemberAccess*>(&expr)) {
@@ -757,6 +819,8 @@ llvm::Value* CodeGenerator::codegen(const Expression& expr) {
         return codegenBooleanLiteral(*e);
     } else if (auto* e = dynamic_cast<const ChanceExpr*>(&expr)) {
         return codegenChanceExpr(*e);
+    } else if (auto* e = dynamic_cast<const MaybeExpr*>(&expr)) {
+        return codegenMaybeExpr(*e);
     }
     throw std::runtime_error("Unknown expression type");
 }
@@ -951,8 +1015,132 @@ llvm::Value* CodeGenerator::codegenIdentifier(const Identifier& expr) {
     return builder_->CreateLoad(var_type, val, expr.name);
 }
 
+llvm::Value* CodeGenerator::codegenNullLiteral(const NullLiteral& expr) {
+    return llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*context_));
+}
+
 llvm::Value* CodeGenerator::codegenMemberAccess(const MemberAccess& expr) {
     return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0, true));
+}
+
+llvm::Value* CodeGenerator::codegenMaybeExpr(const MaybeExpr& expr) {
+    llvm::Function* function = builder_->GetInsertBlock()->getParent();
+    
+    // evaluate the expression, this should give us an identifier that we can look up
+    if (auto* id = dynamic_cast<const Identifier*>(expr.value.get())) {
+        llvm::Value* maybe_alloca = named_values_[id->name];
+        if (!maybe_alloca) {
+            throw std::runtime_error("Variable not found: " + id->name);
+        }
+        
+        auto* alloca_inst = llvm::dyn_cast<llvm::AllocaInst>(maybe_alloca);
+        if (!alloca_inst) {
+            throw std::runtime_error("Maybe expression requires a variable");
+        }
+        
+        llvm::Type* maybe_type = alloca_inst->getAllocatedType();
+        
+        if (!maybe_type->isStructTy()) {
+            throw std::runtime_error("Maybe expression requires a maybe type value");
+        }
+ 
+        llvm::Value* has_value_ptr = builder_->CreateStructGEP(
+            maybe_type,
+            maybe_alloca,
+            0,
+            "has_value_ptr"
+        );
+        llvm::Value* has_value = builder_->CreateLoad(
+            llvm::Type::getInt1Ty(*context_),
+            has_value_ptr,
+            "has_value"
+        );
+        
+        // create blocks
+        llvm::BasicBlock* then_block = llvm::BasicBlock::Create(*context_, "maybe_then", function);
+        llvm::BasicBlock* else_block = llvm::BasicBlock::Create(*context_, "maybe_else", function);
+        llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(*context_, "maybe_merge", function);
+        
+        builder_->CreateCondBr(has_value, then_block, else_block);
+        
+        // generate then branch
+        builder_->SetInsertPoint(then_block);
+        for (const auto& stmt : expr.then_branch) {
+            codegen(*stmt);
+        }
+        if (!builder_->GetInsertBlock()->getTerminator()) {
+            builder_->CreateBr(merge_block);
+        }
+        
+        // generate else branch
+        builder_->SetInsertPoint(else_block);
+        for (const auto& stmt : expr.else_branch) {
+            codegen(*stmt);
+        }
+        if (!builder_->GetInsertBlock()->getTerminator()) {
+            builder_->CreateBr(merge_block);
+        }
+        
+        builder_->SetInsertPoint(merge_block);
+        
+        // return the loaded maybe value
+        return builder_->CreateLoad(maybe_type, maybe_alloca, "maybe_val");
+    } else if (auto* func_call = dynamic_cast<const FunctionCall*>(expr.value.get())) {
+        // handle function call that returns a maybe type
+        llvm::Value* maybe_val = codegen(*func_call);
+        
+        if (!maybe_val->getType()->isStructTy()) {
+            throw std::runtime_error("Maybe expression requires a maybe type value");
+        }
+        
+        // store the value in an alloca so we can use GEP on it
+        llvm::AllocaInst* temp_alloca = builder_->CreateAlloca(maybe_val->getType(), nullptr, "maybe_temp");
+        builder_->CreateStore(maybe_val, temp_alloca);
+        
+        // extract the has_value flag using GEP on the alloca
+        llvm::Value* has_value_ptr = builder_->CreateStructGEP(
+            maybe_val->getType(),
+            temp_alloca,
+            0,
+            "has_value_ptr"
+        );
+        llvm::Value* has_value = builder_->CreateLoad(
+            llvm::Type::getInt1Ty(*context_),
+            has_value_ptr,
+            "has_value"
+        );
+        
+        // create blocks
+        llvm::BasicBlock* then_block = llvm::BasicBlock::Create(*context_, "maybe_then", function);
+        llvm::BasicBlock* else_block = llvm::BasicBlock::Create(*context_, "maybe_else", function);
+        llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(*context_, "maybe_merge", function);
+        
+        builder_->CreateCondBr(has_value, then_block, else_block);
+        
+        // generate then branch
+        builder_->SetInsertPoint(then_block);
+        for (const auto& stmt : expr.then_branch) {
+            codegen(*stmt);
+        }
+        if (!builder_->GetInsertBlock()->getTerminator()) {
+            builder_->CreateBr(merge_block);
+        }
+        
+        // generate else branch
+        builder_->SetInsertPoint(else_block);
+        for (const auto& stmt : expr.else_branch) {
+            codegen(*stmt);
+        }
+        if (!builder_->GetInsertBlock()->getTerminator()) {
+            builder_->CreateBr(merge_block);
+        }
+        
+        builder_->SetInsertPoint(merge_block);
+        
+        return maybe_val;
+    } else {
+        throw std::runtime_error("Maybe expression requires an identifier or function call");
+    }
 }
 
 llvm::Value* CodeGenerator::codegenUnaryOp(const UnaryOp& expr) {
@@ -1069,6 +1257,33 @@ llvm::Value* CodeGenerator::codegenBinaryOp(const BinaryOp& expr) {
     // handle comparison operators
     if (expr.op == "<" || expr.op == "<=" || expr.op == ">" || expr.op == ">=" || 
         expr.op == "==" || expr.op == "!=") {
+        
+        // special handling for string equality/inequality
+        if ((expr.op == "==" || expr.op == "!=") && left->getType()->isPointerTy() && right->getType()->isPointerTy()) {
+            llvm::FunctionType* strcmp_type = llvm::FunctionType::get(
+                llvm::Type::getInt32Ty(*context_),
+                {llvm::PointerType::getUnqual(*context_), llvm::PointerType::getUnqual(*context_)},
+                false
+            );
+            llvm::Function* strcmp_func = module_->getFunction("strcmp");
+            if (!strcmp_func) {
+                strcmp_func = llvm::Function::Create(
+                    strcmp_type,
+                    llvm::Function::ExternalLinkage,
+                    "strcmp",
+                    module_.get()
+                );
+            }
+
+            llvm::Value* cmp_result = builder_->CreateCall(strcmp_func, {left, right});
+            
+            // strcmp returns 0 if strings are equal
+            if (expr.op == "==") {
+                return builder_->CreateICmpEQ(cmp_result, llvm::ConstantInt::get(llvm::Type::getInt32Ty(*context_), 0), "streq");
+            } else { // !=
+                return builder_->CreateICmpNE(cmp_result, llvm::ConstantInt::get(llvm::Type::getInt32Ty(*context_), 0), "strne");
+            }
+        }
         
         if (left->getType()->isFloatingPointTy()) {
             // floating point comparisons
@@ -1276,7 +1491,6 @@ void CodeGenerator::codegenChanceStmt(const ChanceStmt& stmt) {
     
     builder_->SetInsertPoint(merge_block);
 }
-
 void CodeGenerator::codegenIfStmt(const IfStmt& stmt) {
     llvm::Function* function = builder_->GetInsertBlock()->getParent();
     
@@ -1320,7 +1534,10 @@ void CodeGenerator::codegenIfStmt(const IfStmt& stmt) {
     for (const auto& s : stmt.then_branch) {
         codegen(*s);
     }
-    builder_->CreateBr(merge_block);
+    // Only add branch if block doesn't already have a terminator
+    if (!builder_->GetInsertBlock()->getTerminator()) {
+        builder_->CreateBr(merge_block);
+    }
     
     // generate elif branches if they exist
     llvm::BasicBlock* current_else_block = else_block;
@@ -1365,7 +1582,10 @@ void CodeGenerator::codegenIfStmt(const IfStmt& stmt) {
         for (const auto& s : elif_stmt->then_branch) {
             codegen(*s);
         }
-        builder_->CreateBr(merge_block);
+        // Only add branch if block doesn't already have a terminator
+        if (!builder_->GetInsertBlock()->getTerminator()) {
+            builder_->CreateBr(merge_block);
+        }
         
         current_else_block = next_elif_block;
     }
@@ -1376,22 +1596,27 @@ void CodeGenerator::codegenIfStmt(const IfStmt& stmt) {
         for (const auto& s : stmt.else_branch) {
             codegen(*s);
         }
-        builder_->CreateBr(merge_block);
+        // Only add branch if block doesn't already have a terminator
+        if (!builder_->GetInsertBlock()->getTerminator()) {
+            builder_->CreateBr(merge_block);
+        }
     } else if (current_else_block) {
         // if there's an else block but no else branch, just branch to merge
         builder_->SetInsertPoint(current_else_block);
-        builder_->CreateBr(merge_block);
+        if (!builder_->GetInsertBlock()->getTerminator()) {
+            builder_->CreateBr(merge_block);
+        }
     } else if (else_block) {
         builder_->SetInsertPoint(else_block);
-        builder_->CreateBr(merge_block);
+        if (!builder_->GetInsertBlock()->getTerminator()) {
+            builder_->CreateBr(merge_block);
+        }
     }
     
     // continue from merge block
     builder_->SetInsertPoint(merge_block);
 }
 
-// function call codegen
-// function call codegen
 llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
     llvm::Function* callee = nullptr;
     std::string func_name;
@@ -1436,6 +1661,28 @@ llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
         throw std::runtime_error("Unknown function: " + func_name);
     }
     
+    std::string actual_func_name = callee->getName().str();
+    
+    // Special handling for print functions with maybe types - CHECK BEFORE codegen
+    bool is_print_func = (actual_func_name == "summit_io_println" || 
+                         actual_func_name == "summit_io_print" ||
+                         actual_func_name.find("std.io.println") != std::string::npos || 
+                         actual_func_name.find("std.io.print") != std::string::npos);
+    
+    if (is_print_func && !expr.arguments.empty()) {
+        // Check if the argument is a maybe type BEFORE calling codegen
+        if (auto* id = dynamic_cast<const Identifier*>(expr.arguments[0].get())) {
+            auto type_it = variable_types_.find(id->name);
+            if (type_it != variable_types_.end() && type_it->second.kind == Type::Kind::MAYBE) {
+                // This is a maybe type - handle it specially
+                llvm::Value* maybe_alloca = named_values_[id->name];
+                llvm::Type* maybe_type = llvm::cast<llvm::AllocaInst>(maybe_alloca)->getAllocatedType();
+                return extractMaybeValueForPrint(maybe_alloca, maybe_type, type_it->second);
+            }
+        }
+    }
+    
+    // Normal argument processing
     std::vector<llvm::Value*> args;
     
     for (size_t i = 0; i < expr.arguments.size(); i++) {
@@ -1443,8 +1690,6 @@ llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
         args.push_back(arg_val);
     }
 
-    std::string actual_func_name = callee->getName().str();
-    
     Type return_summit_type = Type::i64();
     auto return_type_it = function_return_types_.find(func_name);
     if (return_type_it != function_return_types_.end()) {
@@ -1454,127 +1699,120 @@ llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
     }
     
     // handle print function overloading
-    if (!args.empty()) {
-        bool is_print_func = (actual_func_name == "summit_io_println" || 
-                             actual_func_name == "summit_io_print" ||
-                             actual_func_name.find("std.io.println") != std::string::npos || 
-                             actual_func_name.find("std.io.print") != std::string::npos);
+    if (!args.empty() && is_print_func) {
+        llvm::Type* arg_type = args[0]->getType();
+        Type summit_type = Type::i64();
         
-        if (is_print_func) {
-            llvm::Type* arg_type = args[0]->getType();
-            Type summit_type = Type::i64();
+        // try to figure out what type we're actually printing
+        if (auto* func_call = dynamic_cast<const FunctionCall*>(expr.arguments[0].get())) {
+            std::string called_func_name;
+            if (auto* id = dynamic_cast<const Identifier*>(func_call->callee.get())) {
+                called_func_name = id->name;
+                auto ret_type_it = function_return_types_.find(called_func_name);
+                if (ret_type_it != function_return_types_.end()) {
+                    summit_type = ret_type_it->second;
+                }
+            }
+        } else if (auto* id = dynamic_cast<const Identifier*>(expr.arguments[0].get())) {
+            auto type_it = variable_types_.find(id->name);
+            if (type_it != variable_types_.end()) {
+                summit_type = type_it->second;
+            }
+        } else if (auto* num_lit = dynamic_cast<const NumberLiteral*>(expr.arguments[0].get())) {
+            if (num_lit->isLargeInteger()) {
+                summit_type = Type::u64();
+            } else if (num_lit->isRegularInteger()) {
+                summit_type = Type::i64();
+            } else {
+                summit_type = Type::f64();
+            }
+        } else if (auto* bool_lit = dynamic_cast<const BooleanLiteral*>(expr.arguments[0].get())) {
+            summit_type = Type::boolean();
+        } else if (auto* str_lit = dynamic_cast<const StringLiteral*>(expr.arguments[0].get())) {
+            summit_type = Type::string();
+        } else if (auto* cast_expr = dynamic_cast<const CastExpr*>(expr.arguments[0].get())) {
+            summit_type = cast_expr->target_type;
+        }
+        
+        // pick the right print variant
+        if (arg_type->isIntegerTy(1) || summit_type.kind == Type::Kind::BOOL) {
+            std::string base_name = (actual_func_name.find("println") != std::string::npos) ? 
+                "std.io.println" : "std.io.print";
+            std::string bool_variant = base_name + "_bool";
+            llvm::Function* bool_func = getOrDeclareStdlibFunction(bool_variant);
+            if (bool_func) {
+                callee = bool_func;
+                if (!arg_type->isIntegerTy(1)) {
+                    args[0] = castValue(args[0], getLLVMType(Type::boolean()), Type::boolean());
+                }
+            }
+        }
+        else if ((arg_type->isIntegerTy() && !arg_type->isIntegerTy(1)) || 
+                 summit_type.kind == Type::Kind::I8 || summit_type.kind == Type::Kind::I16 || 
+                 summit_type.kind == Type::Kind::I32 || summit_type.kind == Type::Kind::I64 ||
+                 summit_type.kind == Type::Kind::U8 || summit_type.kind == Type::Kind::U16 || 
+                 summit_type.kind == Type::Kind::U32 || summit_type.kind == Type::Kind::U64) {
             
-            // try to figure out what type we're actually printing
-            if (auto* func_call = dynamic_cast<const FunctionCall*>(expr.arguments[0].get())) {
-                std::string called_func_name;
-                if (auto* id = dynamic_cast<const Identifier*>(func_call->callee.get())) {
-                    called_func_name = id->name;
-                    auto ret_type_it = function_return_types_.find(called_func_name);
-                    if (ret_type_it != function_return_types_.end()) {
-                        summit_type = ret_type_it->second;
+            std::string base_name = (actual_func_name.find("println") != std::string::npos) ? 
+                "std.io.println" : "std.io.print";
+            
+            bool is_unsigned = (summit_type.kind == Type::Kind::U8 ||
+                            summit_type.kind == Type::Kind::U16 ||
+                            summit_type.kind == Type::Kind::U32 ||
+                            summit_type.kind == Type::Kind::U64);
+            
+            std::string int_variant = is_unsigned ? base_name + "_uint" : base_name + "_int";
+            llvm::Function* int_func = getOrDeclareStdlibFunction(int_variant);
+            
+            if (int_func) {
+                callee = int_func;
+                if (!arg_type->isIntegerTy()) {
+                    if (arg_type->isPointerTy()) {
+                        throw std::runtime_error("Cannot convert pointer to integer for print function");
+                    }
+                    args[0] = castValue(args[0], getInt64Type(), summit_type);
+                } else if (!arg_type->isIntegerTy(64)) {
+                    if (is_unsigned) {
+                        args[0] = builder_->CreateZExt(args[0], getInt64Type(), "print_zext");
+                    } else {
+                        args[0] = builder_->CreateSExt(args[0], getInt64Type(), "print_sext");
                     }
                 }
-            } else if (auto* id = dynamic_cast<const Identifier*>(expr.arguments[0].get())) {
-                auto type_it = variable_types_.find(id->name);
-                if (type_it != variable_types_.end()) {
-                    summit_type = type_it->second;
-                }
-            } else if (auto* num_lit = dynamic_cast<const NumberLiteral*>(expr.arguments[0].get())) {
-                if (num_lit->isLargeInteger()) {
-                    summit_type = Type::u64();
-                } else if (num_lit->isRegularInteger()) {
-                    summit_type = Type::i64();
-                } else {
-                    summit_type = Type::f64();
-                }
-            } else if (auto* bool_lit = dynamic_cast<const BooleanLiteral*>(expr.arguments[0].get())) {
-                summit_type = Type::boolean();
-            } else if (auto* str_lit = dynamic_cast<const StringLiteral*>(expr.arguments[0].get())) {
-                summit_type = Type::string();
-            } else if (auto* cast_expr = dynamic_cast<const CastExpr*>(expr.arguments[0].get())) {
-                summit_type = cast_expr->target_type;
+            }
+        }
+        else if (arg_type->isFloatingPointTy() || 
+                 summit_type.kind == Type::Kind::F32 || summit_type.kind == Type::Kind::F64) {
+            
+            std::string base_name = (actual_func_name.find("println") != std::string::npos) ? 
+                "std.io.println" : "std.io.print";
+            
+            std::string float_variant;
+            if (summit_type.kind == Type::Kind::F32) {
+                float_variant = base_name + "_f32";
+            } else {
+                float_variant = base_name + "_f64";
             }
             
-            // pick the right print variant
-            if (arg_type->isIntegerTy(1) || summit_type.kind == Type::Kind::BOOL) {
-                std::string base_name = (actual_func_name.find("println") != std::string::npos) ? 
-                    "std.io.println" : "std.io.print";
-                std::string bool_variant = base_name + "_bool";
-                llvm::Function* bool_func = getOrDeclareStdlibFunction(bool_variant);
-                if (bool_func) {
-                    callee = bool_func;
-                    if (!arg_type->isIntegerTy(1)) {
-                        args[0] = castValue(args[0], getLLVMType(Type::boolean()), Type::boolean());
-                    }
+            llvm::Function* float_func = getOrDeclareStdlibFunction(float_variant);
+            if (float_func) {
+                callee = float_func;
+                if (summit_type.kind == Type::Kind::F32 && arg_type->isDoubleTy()) {
+                    args[0] = builder_->CreateFPTrunc(args[0], getLLVMType(Type::f32()), "print_fptrunc");
+                } else if (summit_type.kind == Type::Kind::F64 && arg_type->isFloatTy()) {
+                    args[0] = builder_->CreateFPExt(args[0], getLLVMType(Type::f64()), "print_fpext");
+                } else if (!arg_type->isFloatingPointTy()) {
+                    args[0] = castValue(args[0], getLLVMType(summit_type), summit_type);
                 }
             }
-            else if ((arg_type->isIntegerTy() && !arg_type->isIntegerTy(1)) || 
-                     summit_type.kind == Type::Kind::I8 || summit_type.kind == Type::Kind::I16 || 
-                     summit_type.kind == Type::Kind::I32 || summit_type.kind == Type::Kind::I64 ||
-                     summit_type.kind == Type::Kind::U8 || summit_type.kind == Type::Kind::U16 || 
-                     summit_type.kind == Type::Kind::U32 || summit_type.kind == Type::Kind::U64) {
-                
-                std::string base_name = (actual_func_name.find("println") != std::string::npos) ? 
-                    "std.io.println" : "std.io.print";
-                
-                bool is_unsigned = (summit_type.kind == Type::Kind::U8 ||
-                                summit_type.kind == Type::Kind::U16 ||
-                                summit_type.kind == Type::Kind::U32 ||
-                                summit_type.kind == Type::Kind::U64);
-                
-                std::string int_variant = is_unsigned ? base_name + "_uint" : base_name + "_int";
-                llvm::Function* int_func = getOrDeclareStdlibFunction(int_variant);
-                
-                if (int_func) {
-                    callee = int_func;
-                    if (!arg_type->isIntegerTy()) {
-                        if (arg_type->isPointerTy()) {
-                            throw std::runtime_error("Cannot convert pointer to integer for print function");
-                        }
-                        args[0] = castValue(args[0], getInt64Type(), summit_type);
-                    } else if (!arg_type->isIntegerTy(64)) {
-                        if (is_unsigned) {
-                            args[0] = builder_->CreateZExt(args[0], getInt64Type(), "print_zext");
-                        } else {
-                            args[0] = builder_->CreateSExt(args[0], getInt64Type(), "print_sext");
-                        }
-                    }
-                }
-            }
-            else if (arg_type->isFloatingPointTy() || 
-                     summit_type.kind == Type::Kind::F32 || summit_type.kind == Type::Kind::F64) {
-                
-                std::string base_name = (actual_func_name.find("println") != std::string::npos) ? 
-                    "std.io.println" : "std.io.print";
-                
-                std::string float_variant;
-                if (summit_type.kind == Type::Kind::F32) {
-                    float_variant = base_name + "_f32";
-                } else {
-                    float_variant = base_name + "_f64";
-                }
-                
-                llvm::Function* float_func = getOrDeclareStdlibFunction(float_variant);
-                if (float_func) {
-                    callee = float_func;
-                    if (summit_type.kind == Type::Kind::F32 && arg_type->isDoubleTy()) {
-                        args[0] = builder_->CreateFPTrunc(args[0], getLLVMType(Type::f32()), "print_fptrunc");
-                    } else if (summit_type.kind == Type::Kind::F64 && arg_type->isFloatTy()) {
-                        args[0] = builder_->CreateFPExt(args[0], getLLVMType(Type::f64()), "print_fpext");
-                    } else if (!arg_type->isFloatingPointTy()) {
-                        args[0] = castValue(args[0], getLLVMType(summit_type), summit_type);
-                    }
-                }
-            }
-            else if (arg_type->isPointerTy() || summit_type.kind == Type::Kind::STRING) {
-                std::string base_name = (actual_func_name.find("println") != std::string::npos) ? 
-                    "std.io.println" : "std.io.print";
-                llvm::Function* string_func = getOrDeclareStdlibFunction(base_name);
-                if (string_func) {
-                    callee = string_func;
-                    if (!arg_type->isPointerTy()) {
-                        throw std::runtime_error("Cannot convert non-pointer type to string for print function");
-                    }
+        }
+        else if (arg_type->isPointerTy() || summit_type.kind == Type::Kind::STRING) {
+            std::string base_name = (actual_func_name.find("println") != std::string::npos) ? 
+                "std.io.println" : "std.io.print";
+            llvm::Function* string_func = getOrDeclareStdlibFunction(base_name);
+            if (string_func) {
+                callee = string_func;
+                if (!arg_type->isPointerTy()) {
+                    throw std::runtime_error("Cannot convert non-pointer type to string for print function");
                 }
             }
         }
@@ -1601,21 +1839,21 @@ llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
     return builder_->CreateCall(callee, args);
 }
 
-// Simple random seed generation
+// simple random seed generation
 void CodeGenerator::generateRandomSeed() {
     llvm::Function* srand_func = module_->getFunction("srand");
     llvm::Function* time_func = module_->getFunction("time");
     
     if (!srand_func || !time_func) return;
     
-    // Call time(NULL) to get current time
+    // call time(NULL) to get current time
     llvm::Value* null_ptr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*context_));
     llvm::Value* time_val = builder_->CreateCall(time_func, {null_ptr});
     
-    // Truncate to i32 for srand
+    // truncate to i32 for srand
     llvm::Value* seed = builder_->CreateTrunc(time_val, llvm::Type::getInt32Ty(*context_));
     
-    // Call srand with the seed
+    // call srand with the seed
     builder_->CreateCall(srand_func, {seed});
 }
 
@@ -1937,7 +2175,6 @@ void CodeGenerator::codegenUsingStmt(const UsingStmt& stmt) {
         }
     }
 }
-
 void CodeGenerator::codegenVarDecl(const VarDecl& stmt) {
     // handle import statements disguised as var decls
     if (auto* import_expr = dynamic_cast<const ImportExpr*>(stmt.initializer.get())) {
@@ -1948,16 +2185,11 @@ void CodeGenerator::codegenVarDecl(const VarDecl& stmt) {
 
     if (auto* named_import = dynamic_cast<const NamedImportExpr*>(stmt.initializer.get())) {
         ensureModuleExists(named_import->module);
-
         for (const auto& import_name : named_import->imports) {
             std::string full_path = named_import->module + "." + import_name;
             llvm::Function* func = getOrDeclareStdlibFunction(full_path);
-            
             if (func) {
                 function_references_[import_name] = func;
-            } else {
-                std::cerr << "Warning: Function '" << import_name << "' not found in module '" 
-                          << named_import->module << "'" << std::endl;
             }
         }
         return;
@@ -1974,22 +2206,18 @@ void CodeGenerator::codegenVarDecl(const VarDecl& stmt) {
 
     if (auto* member = dynamic_cast<const MemberAccess*>(stmt.initializer.get())) {
         std::string full_path = extractFunctionPath(member);
-        
         if (!full_path.empty()) {
             ensureModuleExists(full_path);
-
             llvm::Function* func = getOrDeclareStdlibFunction(full_path);
             if (func) {
                 function_references_[stmt.name] = func;
                 return;
             }
-
             auto mod_it = modules_.find(full_path);
             if (mod_it != modules_.end()) {
                 module_aliases_[stmt.name] = full_path;
                 return;
             }
-
             size_t last_dot = full_path.find_last_of('.');
             if (last_dot != std::string::npos) {
                 std::string module_path = full_path.substr(0, last_dot);
@@ -2000,13 +2228,87 @@ void CodeGenerator::codegenVarDecl(const VarDecl& stmt) {
                     return;
                 }
             }
-
             module_aliases_[stmt.name] = full_path;
             return;
         }
     }
 
-    // regular variable declaration
+    // handle maybe types with null initialization
+    if (stmt.type.has_value() && stmt.type.value().kind == Type::Kind::MAYBE) {
+        Type maybe_type = stmt.type.value();
+        llvm::Type* llvm_maybe_type = getLLVMType(maybe_type);
+        
+        llvm::AllocaInst* alloca = builder_->CreateAlloca(llvm_maybe_type, nullptr, stmt.name);
+
+        if (dynamic_cast<const NullLiteral*>(stmt.initializer.get())) {
+            llvm::Value* maybe_val = llvm::UndefValue::get(llvm_maybe_type);
+
+            maybe_val = builder_->CreateInsertValue(
+                maybe_val,
+                llvm::ConstantInt::get(llvm::Type::getInt1Ty(*context_), 0),
+                {0},
+                "null_has_value"
+            );
+
+            llvm::Type* inner_llvm_type = getLLVMType(*maybe_type.inner_type);
+            llvm::Value* zero_val;
+            if (inner_llvm_type->isIntegerTy()) {
+                zero_val = llvm::ConstantInt::get(inner_llvm_type, 0);
+            } else if (inner_llvm_type->isFloatingPointTy()) {
+                zero_val = llvm::ConstantFP::get(inner_llvm_type, 0.0);
+            } else if (inner_llvm_type->isPointerTy()) {
+                zero_val = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(inner_llvm_type));
+            } else {
+                zero_val = llvm::UndefValue::get(inner_llvm_type);
+            }
+            
+            maybe_val = builder_->CreateInsertValue(
+                maybe_val,
+                zero_val,
+                {1},
+                "null_value"
+            );
+            
+            builder_->CreateStore(maybe_val, alloca);
+        } else if (auto* maybe_expr = dynamic_cast<const MaybeExpr*>(stmt.initializer.get())) {
+            llvm::Value* result = codegenMaybeExpr(*maybe_expr);
+            builder_->CreateStore(result, alloca);
+        } else {
+            llvm::Value* init_val = codegen(*stmt.initializer);
+            
+            if (init_val->getType() == llvm_maybe_type) {
+                builder_->CreateStore(init_val, alloca);
+            } else {
+                llvm::Value* maybe_val = llvm::UndefValue::get(llvm_maybe_type);
+
+                maybe_val = builder_->CreateInsertValue(
+                    maybe_val,
+                    llvm::ConstantInt::get(llvm::Type::getInt1Ty(*context_), 1),
+                    {0},
+                    "has_value"
+                );
+
+                llvm::Type* inner_llvm_type = getLLVMType(*maybe_type.inner_type);
+                if (init_val->getType() != inner_llvm_type) {
+                    init_val = castValue(init_val, inner_llvm_type, *maybe_type.inner_type);
+                }
+                
+                maybe_val = builder_->CreateInsertValue(
+                    maybe_val,
+                    init_val,
+                    {1},
+                    "value"
+                );
+                
+                builder_->CreateStore(maybe_val, alloca);
+            }
+        }
+        
+        named_values_[stmt.name] = alloca;
+        variable_types_[stmt.name] = maybe_type;
+        return;
+    }
+
     llvm::Value* init_val = codegen(*stmt.initializer);
     
     llvm::Type* var_type;
@@ -2016,7 +2318,6 @@ void CodeGenerator::codegenVarDecl(const VarDecl& stmt) {
         summit_type = stmt.type.value();
         var_type = getLLVMType(summit_type);
         
-        // special handling for u64 type
         if (summit_type.kind == Type::Kind::U64 && init_val->getType()->isIntegerTy(64)) {
             if (llvm::ConstantInt* const_int = llvm::dyn_cast<llvm::ConstantInt>(init_val)) {
                 uint64_t unsigned_value = const_int->getZExtValue();
@@ -2024,7 +2325,6 @@ void CodeGenerator::codegenVarDecl(const VarDecl& stmt) {
             }
         }
         
-        // range checking
         if (isIntegerType(summit_type)) {
             if (auto* num_lit = dynamic_cast<const NumberLiteral*>(stmt.initializer.get())) {
                 if (num_lit->isLargeInteger()) {
@@ -2048,7 +2348,6 @@ void CodeGenerator::codegenVarDecl(const VarDecl& stmt) {
             init_val = castValue(init_val, var_type, summit_type);
         }
     } else {
-        // infer type from initializer
         if (auto* num_lit = dynamic_cast<const NumberLiteral*>(stmt.initializer.get())) {
             if (num_lit->isLargeInteger()) {
                 summit_type = Type::u64();
@@ -2077,6 +2376,112 @@ void CodeGenerator::codegenVarDecl(const VarDecl& stmt) {
     llvm::AllocaInst* alloca = builder_->CreateAlloca(var_type, nullptr, stmt.name);
     builder_->CreateStore(init_val, alloca);
     named_values_[stmt.name] = alloca;
+}
+
+bool CodeGenerator::isMaybeValue(llvm::Value* val, const Expression* expr) {
+    if (auto* id = dynamic_cast<const Identifier*>(expr)) {
+        auto type_it = variable_types_.find(id->name);
+        if (type_it != variable_types_.end() && type_it->second.kind == Type::Kind::MAYBE) {
+            return true;
+        }
+    }
+    return false;
+}
+
+llvm::Value* CodeGenerator::extractMaybeValueForPrint(llvm::Value* maybe_alloca, 
+                                                       llvm::Type* maybe_type,
+                                                       const Type& summit_type) {
+    if (summit_type.kind != Type::Kind::MAYBE || !summit_type.inner_type) {
+        throw std::runtime_error("Expected maybe type");
+    }
+    
+    llvm::Function* function = builder_->GetInsertBlock()->getParent();
+    
+    // extract has_value using GEP on the alloca
+    llvm::Value* has_value_ptr = builder_->CreateStructGEP(maybe_type, maybe_alloca, 0, "has_value_ptr");
+    llvm::Value* has_value = builder_->CreateLoad(llvm::Type::getInt1Ty(*context_), has_value_ptr, "has_value");
+    
+    // create blocks
+    llvm::BasicBlock* has_value_block = llvm::BasicBlock::Create(*context_, "has_value", function);
+    llvm::BasicBlock* null_block = llvm::BasicBlock::Create(*context_, "is_null", function);
+    llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(*context_, "print_merge", function);
+    
+    builder_->CreateCondBr(has_value, has_value_block, null_block);
+    builder_->SetInsertPoint(has_value_block);
+
+    Type inner_type = *summit_type.inner_type;
+    llvm::Type* inner_llvm_type = getLLVMType(inner_type);
+    llvm::Value* value_ptr = builder_->CreateStructGEP(maybe_type, maybe_alloca, 1, "value_ptr");
+    llvm::Value* actual_value = builder_->CreateLoad(inner_llvm_type, value_ptr, "actual_value");
+
+    std::string print_func_name;
+    
+    switch (inner_type.kind) {
+        case Type::Kind::STRING:
+            print_func_name = "std.io.println";
+            break;
+        case Type::Kind::I8:
+        case Type::Kind::I16:
+        case Type::Kind::I32:
+        case Type::Kind::I64:
+            print_func_name = "std.io.println_int";
+            break;
+        case Type::Kind::U8:
+        case Type::Kind::U16:
+        case Type::Kind::U32:
+        case Type::Kind::U64:
+            print_func_name = "std.io.println_uint";
+            break;
+        case Type::Kind::F32:
+            print_func_name = "std.io.println_f32";
+            break;
+        case Type::Kind::F64:
+            print_func_name = "std.io.println_f64";
+            break;
+        case Type::Kind::BOOL:
+            print_func_name = "std.io.println_bool";
+            break;
+        default:
+            print_func_name = "std.io.println_int";
+            break;
+    }
+    
+    llvm::Function* print_func = getOrDeclareStdlibFunction(print_func_name);
+    if (!print_func) {
+        throw std::runtime_error("Could not find print function: " + print_func_name);
+    }
+
+    llvm::Type* expected_type = print_func->getFunctionType()->getParamType(0);
+
+    if (actual_value->getType() != expected_type) {
+        if (inner_type.kind == Type::Kind::BOOL && actual_value->getType()->isIntegerTy(1)) {
+            
+        } else {
+            try {
+                actual_value = castValue(actual_value, expected_type, inner_type);
+            } catch (const std::runtime_error& e) {
+                throw std::runtime_error(
+                    "Failed to cast maybe<" + typeToString(inner_type) + 
+                    "> value for printing: " + std::string(e.what())
+                );
+            }
+        }
+    }
+    
+    builder_->CreateCall(print_func, {actual_value});
+    builder_->CreateBr(merge_block);
+    
+    // null block, print "null"
+    builder_->SetInsertPoint(null_block);
+    llvm::Function* null_print_func = getOrDeclareStdlibFunction("std.io.println");
+    if (null_print_func) {
+        llvm::Value* null_str = builder_->CreateGlobalStringPtr("null");
+        builder_->CreateCall(null_print_func, {null_str});
+    }
+    builder_->CreateBr(merge_block);
+    builder_->SetInsertPoint(merge_block);
+    
+    return llvm::ConstantInt::get(llvm::Type::getInt32Ty(*context_), 0);
 }
 
 void CodeGenerator::codegenFunctionDecl(const FunctionDecl& stmt) {
@@ -2121,7 +2526,7 @@ void CodeGenerator::codegenFunctionDecl(const FunctionDecl& stmt) {
     builder_->SetInsertPoint(entry);
 
     if (stmt.name == "main") {
-        // Seed random number generator once at program start
+        // seed random number generator once at program start
         llvm::FunctionType* time_type = llvm::FunctionType::get(
             llvm::Type::getInt64Ty(*context_),
             {llvm::PointerType::getUnqual(*context_)},
@@ -2152,7 +2557,7 @@ void CodeGenerator::codegenFunctionDecl(const FunctionDecl& stmt) {
             );
         }
         
-        // Call time(NULL) and srand() at the start of main
+        // call time(NULL) and srand() at the start of main
         llvm::Value* null_ptr = llvm::ConstantPointerNull::get(llvm::PointerType::getUnqual(*context_));
         llvm::Value* time_val = builder_->CreateCall(time_func, {null_ptr});
         llvm::Value* seed = builder_->CreateTrunc(time_val, llvm::Type::getInt32Ty(*context_));
@@ -2201,6 +2606,39 @@ void CodeGenerator::codegenFunctionDecl(const FunctionDecl& stmt) {
     if (!builder_->GetInsertBlock()->getTerminator()) {
         if (return_type->isVoidTy()) {
             builder_->CreateRetVoid();
+        } else if (return_type->isStructTy() && return_summit_type.kind == Type::Kind::MAYBE) {
+            // default return for maybe types is null
+            llvm::Value* maybe_val = llvm::UndefValue::get(return_type);
+            
+            // set has_value to false
+            maybe_val = builder_->CreateInsertValue(
+                maybe_val,
+                llvm::ConstantInt::get(llvm::Type::getInt1Ty(*context_), 0),
+                {0},
+                "default_null_maybe"
+            );
+            
+            // set value to zero
+            llvm::Type* inner_type = return_type->getStructElementType(1);
+            llvm::Value* zero_val;
+            if (inner_type->isIntegerTy()) {
+                zero_val = llvm::ConstantInt::get(inner_type, 0);
+            } else if (inner_type->isFloatingPointTy()) {
+                zero_val = llvm::ConstantFP::get(inner_type, 0.0);
+            } else if (inner_type->isPointerTy()) {
+                zero_val = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(inner_type));
+            } else {
+                zero_val = llvm::UndefValue::get(inner_type);
+            }
+            
+            maybe_val = builder_->CreateInsertValue(
+                maybe_val,
+                zero_val,
+                {1},
+                "default_null_maybe_with_val"
+            );
+            
+            builder_->CreateRet(maybe_val);
         } else {
             llvm::Value* default_val;
             if (return_type->isIntegerTy()) {
@@ -2239,11 +2677,84 @@ void CodeGenerator::codegenFunctionDecl(const FunctionDecl& stmt) {
 }
 
 void CodeGenerator::codegenReturn(const ReturnStmt& stmt) {
-    llvm::Value* ret_val = codegen(*stmt.value);
-
     llvm::Function* current_func = builder_->GetInsertBlock()->getParent();
     llvm::Type* expected_return_type = current_func->getReturnType();
+    
+    // check if we're returning null and the return type is maybe
+    if (auto* null_lit = dynamic_cast<const NullLiteral*>(stmt.value.get())) {
+        auto func_it = function_return_summit_types_.find(current_func);
+        if (func_it != function_return_summit_types_.end()) {
+            Type return_summit_type = func_it->second;
+            
+            if (return_summit_type.kind == Type::Kind::MAYBE) {
+                llvm::Value* maybe_val = llvm::UndefValue::get(expected_return_type);
 
+                maybe_val = builder_->CreateInsertValue(
+                    maybe_val,
+                    llvm::ConstantInt::get(llvm::Type::getInt1Ty(*context_), 0),
+                    {0},
+                    "null_maybe"
+                );
+                
+                llvm::Type* inner_type = expected_return_type->getStructElementType(1);
+                llvm::Value* zero_val;
+                if (inner_type->isIntegerTy()) {
+                    zero_val = llvm::ConstantInt::get(inner_type, 0);
+                } else if (inner_type->isFloatingPointTy()) {
+                    zero_val = llvm::ConstantFP::get(inner_type, 0.0);
+                } else if (inner_type->isPointerTy()) {
+                    zero_val = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(inner_type));
+                } else {
+                    zero_val = llvm::UndefValue::get(inner_type);
+                }
+                
+                maybe_val = builder_->CreateInsertValue(
+                    maybe_val,
+                    zero_val,
+                    {1},
+                    "null_maybe_with_val"
+                );
+                
+                builder_->CreateRet(maybe_val);
+                return;
+            }
+        }
+    }
+    
+    llvm::Value* ret_val = codegen(*stmt.value);
+    
+    auto func_it = function_return_summit_types_.find(current_func);
+    if (func_it != function_return_summit_types_.end()) {
+        Type return_summit_type = func_it->second;
+        
+        if (return_summit_type.kind == Type::Kind::MAYBE) {
+            llvm::Value* maybe_val = llvm::UndefValue::get(expected_return_type);
+            
+            maybe_val = builder_->CreateInsertValue(
+                maybe_val,
+                llvm::ConstantInt::get(llvm::Type::getInt1Ty(*context_), 1),
+                {0},
+                "maybe_has_value"
+            );
+
+            llvm::Type* inner_type = expected_return_type->getStructElementType(1);
+            if (ret_val->getType() != inner_type) {
+                ret_val = castValue(ret_val, inner_type, *return_summit_type.inner_type);
+            }
+
+            maybe_val = builder_->CreateInsertValue(
+                maybe_val,
+                ret_val,
+                {1},
+                "maybe_with_value"
+            );
+            
+            builder_->CreateRet(maybe_val);
+            return;
+        }
+    }
+
+    // normal return handling
     if (ret_val->getType() != expected_return_type) {
         Type expected_summit_type = getSummitTypeFromLLVMType(expected_return_type);
         ret_val = castValue(ret_val, expected_return_type, expected_summit_type);

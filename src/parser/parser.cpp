@@ -66,6 +66,15 @@ void Parser::consume(TokenType type, const std::string& message) {
 
 // type parsing
 std::optional<Type> Parser::parseType() {
+    // Check for maybe keyword
+    if (match(TokenType::MAYBE)) {
+        auto inner = parseType();
+        if (!inner) {
+            throw std::runtime_error("Expected type after 'maybe' at line " + std::to_string(peek().line));
+        }
+        return Type::maybe(inner.value());
+    }
+    
     TokenType tt = peek().type;
     
     switch (tt) {
@@ -365,6 +374,8 @@ std::unique_ptr<Statement> Parser::varDeclaration() {
     
     return std::make_unique<VarDecl>(name.lexeme, type, std::move(initializer), false);
 }
+// In parser.cpp, update the functionDeclaration() function
+// Find this section at the end of functionDeclaration():
 
 std::unique_ptr<Statement> Parser::functionDeclaration() {
     Token name = advance();
@@ -441,8 +452,11 @@ std::unique_ptr<Statement> Parser::functionDeclaration() {
     
     consume(TokenType::END, "Expected 'end' after function body");
 
-    // make sure functions with return types actually return something
-    if (return_type.has_value() && return_type.value().kind != Type::Kind::INFERRED && !has_return_statement) {
+    // Updated validation: allow maybe types to not have explicit returns
+    if (return_type.has_value() && 
+        return_type.value().kind != Type::Kind::INFERRED && 
+        return_type.value().kind != Type::Kind::MAYBE &&  // Allow maybe types without return
+        !has_return_statement) {
         throw std::runtime_error(
             "Function '" + name.lexeme + "' with return type '" + 
             return_type.value().toString() + "' must have at least one return statement at line " + 
@@ -539,10 +553,19 @@ std::unique_ptr<Statement> Parser::chanceStatement() {
 std::unique_ptr<Statement> Parser::returnStatement() {
     auto value = expression();
 
+    if (dynamic_cast<const NullLiteral*>(value.get())) {
+        return std::make_unique<ReturnStmt>(std::move(value));
+    }
+
     // auto cast return values to match function signature if needed
     if (current_function_return_type_.has_value()) {
         auto return_type = current_function_return_type_.value();
         auto value_type = inferExpressionType(value.get());
+        
+        // don't cast if return type is maybe, bc the codegen handles wrapping
+        if (return_type.kind == Type::Kind::MAYBE) {
+            return std::make_unique<ReturnStmt>(std::move(value));
+        }
         
         if (value_type.has_value() && value_type.value() != return_type) {
             value = std::make_unique<CastExpr>(std::move(value), return_type);
@@ -556,7 +579,6 @@ std::unique_ptr<Statement> Parser::expressionStatement() {
     auto expr = expression();
     return std::make_unique<ExpressionStmt>(std::move(expr));
 }
-
 
 std::unique_ptr<Expression> Parser::comparison() {
     auto expr = addition();
@@ -716,6 +738,11 @@ std::unique_ptr<Expression> Parser::memberAccess() {
 }
 
 std::unique_ptr<Expression> Parser::primary() {
+    // handle null literal
+    if (match(TokenType::NULL_LITERAL)) {
+        return std::make_unique<NullLiteral>();
+    }
+    
     // handle imports
     if (match(TokenType::AT)) {
         return import();
@@ -743,6 +770,68 @@ std::unique_ptr<Expression> Parser::primary() {
     
     if (match(TokenType::FALSE)) {
         return std::make_unique<BooleanLiteral>(false);
+    }
+    
+    if (check(TokenType::IDENTIFIER)) {
+        Token id = peek();
+        size_t saved_pos = current_;
+        advance();
+        
+        if (match(TokenType::LPAREN)) {
+            std::vector<std::unique_ptr<Expression>> arguments;
+            
+            if (!check(TokenType::RPAREN)) {
+                do {
+                    skipNewlines();
+                    arguments.push_back(expression());
+                    skipNewlines();
+                } while (match(TokenType::COMMA));
+            }
+            
+            consume(TokenType::RPAREN, "Expected ')' after arguments");
+            
+            auto func_call = std::make_unique<FunctionCall>(
+                std::make_unique<Identifier>(id.lexeme), 
+                std::move(arguments)
+            );
+            
+            if (match(TokenType::DO)) {
+                skipNewlines();
+                
+                std::vector<std::unique_ptr<Statement>> then_branch;
+                while (!check(TokenType::ELSE) && !check(TokenType::END) && !isAtEnd()) {
+                    skipNewlines();
+                    if (check(TokenType::ELSE) || check(TokenType::END)) break;
+                    then_branch.push_back(declaration());
+                    skipNewlines();
+                }
+                
+                std::vector<std::unique_ptr<Statement>> else_branch;
+                if (match(TokenType::ELSE)) {
+                    skipNewlines();
+                    while (!check(TokenType::END) && !isAtEnd()) {
+                        skipNewlines();
+                        if (check(TokenType::END)) break;
+                        else_branch.push_back(declaration());
+                        skipNewlines();
+                    }
+                }
+                
+                consume(TokenType::END, "Expected 'end' after maybe expression");
+                
+                return std::make_unique<MaybeExpr>(
+                    std::move(func_call),
+                    std::move(then_branch),
+                    std::move(else_branch)
+                );
+            }
+            
+            return func_call;
+        } else {
+            current_ = saved_pos;
+            advance();
+            return std::make_unique<Identifier>(previous().lexeme);
+        }
     }
     
     if (match(TokenType::IDENTIFIER)) {

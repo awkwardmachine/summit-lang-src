@@ -1,15 +1,70 @@
+// Do Block Documentation
+//
+// The "do" statement serves multiple purposes in the language:
+//
+// 1. Scoped Code Blocks:
+//    do
+//        // creates a new lexical scope
+//        // variables declared inside are local to this block
+//    end
+//
+// 2. Maybe Type Handling:
+//    do <maybe_expression>
+//        // executed when maybe value is not nil
+//    else
+//        // executed when maybe value is nil
+//    end
+//
+// Scoped blocks are useful for:
+// - Limiting variable lifetimes
+// - Isolating temporary calculations
+// - Organizing complex code sections
+//
+// Maybe handling provides safe nil-checking without explicit conditionals.
+
 @import println from "std.io"
 
 func main() -> i8 do
+    // Example 1: Scoped code block
+    // Creates an isolated scope where variables are local to the block
+    do
+        var x = 5
+        println(x) // Output: 5
+    end
+    // x is now out of scope and cannot be accessed here
+    
+    // Example 2: Maybe type handling
     var string_maybe: maybe string = nil
-
-    // creates a scoped group
+    
+    // First check, string_maybe is nil
     do string_maybe
         println("String is valid")
     else
-        println("Invalid string is nil")
+        println("String is nil") // This executes
     end
-    // x is now out of scope
+    
+    // Assign a value and check again
+    string_maybe = "Hello"
+    
+    do string_maybe
+        println("String is valid") // This executes now
+    else
+        println("String is nil")
+    end
+
+    // Example 3: Nested scopes
+    var outer_var = 10
+    println("Outer before:", outer_var as string)
+    
+    do
+        var inner_var = 20
+        println("Inner: " + inner_var as string)
+        outer_var = 30 // Can modify outer variables
+        println("Modified outer: " + outer_var as string)
+    end
+    
+    // inner_var is out of scope here
+    println("Outer after: " + outer_var as string)
 
     ret 0
 end

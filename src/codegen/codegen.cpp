@@ -1163,6 +1163,10 @@ llvm::Value* CodeGenerator::codegenCast(const CastExpr& expr) {
     llvm::Value* value = codegen(*expr.expression);
     llvm::Type* target_type = getLLVMType(expr.target_type);
     
+    if (expr.target_type.kind == Type::Kind::STRING && !value->getType()->isPointerTy()) {
+        return convertToString(value, expr.expression.get());
+    }
+    
     return castValue(value, target_type, expr.target_type);
 }
 
@@ -1170,6 +1174,30 @@ llvm::Value* CodeGenerator::codegenCast(const CastExpr& expr) {
 llvm::Value* CodeGenerator::codegenBinaryOp(const BinaryOp& expr) {
     llvm::Value* left = codegen(*expr.left);
     llvm::Value* right = codegen(*expr.right);
+    
+    // handle string concat
+    if ((expr.op == "+" || expr.op == ",")) {
+        bool left_is_string = left->getType()->isPointerTy();
+        bool right_is_string = right->getType()->isPointerTy();
+        
+        if (left_is_string || right_is_string) {
+            if (!left_is_string) {
+                left = convertToString(left, expr.left.get());
+            }
+            if (!right_is_string) {
+                right = convertToString(right, expr.right.get());
+            }
+
+            bool add_space = (expr.op == ",");
+            return concatenateStrings(left, right, add_space);
+        }
+
+        if (expr.op == ",") {
+            throw std::runtime_error(
+                "Comma operator can only be used for string concatenation"
+            );
+        }
+    }
     
     // need to check if we're dealing with unsigned values
     bool left_is_signed = true;
@@ -1709,6 +1737,11 @@ llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
                     summit_type = ret_type_it->second;
                 }
             }
+        } else if (auto* binop = dynamic_cast<const BinaryOp*>(expr.arguments[0].get())) {
+            // Check if this is string concatenation (result will be a string)
+            if ((binop->op == "+" || binop->op == ",") && arg_type->isPointerTy()) {
+                summit_type = Type::string();
+            }
         } else if (auto* id = dynamic_cast<const Identifier*>(expr.arguments[0].get())) {
             auto type_it = variable_types_.find(id->name);
             if (type_it != variable_types_.end()) {
@@ -1933,10 +1966,6 @@ void CodeGenerator::promoteVariableType(const std::string& name, llvm::Value* ne
 }
 
 llvm::Value* CodeGenerator::codegenAssignment(const AssignmentExpr& expr) {
-    llvm::Value* value = codegen(*expr.value);
-    
-    Type new_summit_type = getSummitTypeFromLLVMType(value->getType());
-    
     Type current_summit_type = variable_types_[expr.name];
     llvm::Value* var = named_values_[expr.name];
     
@@ -1950,6 +1979,115 @@ llvm::Value* CodeGenerator::codegenAssignment(const AssignmentExpr& expr) {
     }
     
     llvm::Type* current_type = alloca->getAllocatedType();
+    
+    // handle assigning nil to maybe types
+    if (auto* nil_lit = dynamic_cast<const NilLiteral*>(expr.value.get())) {
+        if (current_summit_type.kind == Type::Kind::MAYBE) {
+            // create a nil maybe value
+            llvm::Value* maybe_val = llvm::UndefValue::get(current_type);
+            
+            maybe_val = builder_->CreateInsertValue(
+                maybe_val,
+                llvm::ConstantInt::get(llvm::Type::getInt1Ty(*context_), 0),
+                {0},
+                "assign_nil_has_value"
+            );
+            
+            llvm::Type* inner_llvm_type = getLLVMType(*current_summit_type.inner_type);
+            llvm::Value* zero_val;
+            if (inner_llvm_type->isIntegerTy()) {
+                zero_val = llvm::ConstantInt::get(inner_llvm_type, 0);
+            } else if (inner_llvm_type->isFloatingPointTy()) {
+                zero_val = llvm::ConstantFP::get(inner_llvm_type, 0.0);
+            } else if (inner_llvm_type->isPointerTy()) {
+                zero_val = llvm::ConstantPointerNull::get(llvm::cast<llvm::PointerType>(inner_llvm_type));
+            } else {
+                zero_val = llvm::UndefValue::get(inner_llvm_type);
+            }
+            
+            maybe_val = builder_->CreateInsertValue(
+                maybe_val,
+                zero_val,
+                {1},
+                "assign_nil_value"
+            );
+            
+            builder_->CreateStore(maybe_val, var);
+            return maybe_val;
+        } else {
+            throw std::runtime_error("Cannot assign nil to non-maybe type '" + 
+                                   typeToString(current_summit_type) + "'");
+        }
+    }
+    
+    llvm::Value* value = codegen(*expr.value);
+    Type new_summit_type = getSummitTypeFromLLVMType(value->getType());
+    
+    // type checking for maybe types
+    if (current_summit_type.kind == Type::Kind::MAYBE) {
+        if (!current_summit_type.inner_type) {
+            throw std::runtime_error("Maybe type must have an inner type");
+        }
+        
+        if (new_summit_type.kind != Type::Kind::MAYBE) {
+            Type inner_type = *current_summit_type.inner_type;
+            
+            // allow assignment if types are compatible
+            bool types_compatible = (new_summit_type == inner_type);
+            
+            // also allow numeric type compatibility
+            if (!types_compatible && isIntegerType(inner_type) && isIntegerType(new_summit_type)) {
+                types_compatible = true;
+            }
+            if (!types_compatible && (inner_type.kind == Type::Kind::F32 || inner_type.kind == Type::Kind::F64) &&
+                (new_summit_type.kind == Type::Kind::F32 || new_summit_type.kind == Type::Kind::F64)) {
+                types_compatible = true;
+            }
+            
+            if (!types_compatible) {
+                throw std::runtime_error("Cannot assign type '" + typeToString(new_summit_type) + 
+                                       "' to maybe<" + typeToString(inner_type) + ">");
+            }
+            
+            // cast the value to the inner type if needed
+            llvm::Type* inner_llvm_type = getLLVMType(inner_type);
+            if (value->getType() != inner_llvm_type) {
+                value = castValue(value, inner_llvm_type, inner_type);
+            }
+            
+            // wrap in maybe
+            llvm::Value* maybe_val = llvm::UndefValue::get(current_type);
+            
+            maybe_val = builder_->CreateInsertValue(
+                maybe_val,
+                llvm::ConstantInt::get(llvm::Type::getInt1Ty(*context_), 1),
+                {0},
+                "assign_maybe_has_value"
+            );
+            
+            maybe_val = builder_->CreateInsertValue(
+                maybe_val,
+                value,
+                {1},
+                "assign_maybe_value"
+            );
+            
+            builder_->CreateStore(maybe_val, var);
+            return maybe_val;
+        } else {
+            // assigning maybe to maybe, must be same inner type
+            if (!new_summit_type.inner_type || 
+                *new_summit_type.inner_type != *current_summit_type.inner_type) {
+                throw std::runtime_error("Cannot assign maybe<" + 
+                    typeToString(new_summit_type.inner_type ? *new_summit_type.inner_type : Type::void_type()) + 
+                    "> to maybe<" + typeToString(*current_summit_type.inner_type) + ">");
+            }
+            
+            builder_->CreateStore(value, var);
+            return value;
+        }
+    }
+    
     llvm::Type* new_type = value->getType();
     
     // special handling for u64 assignments
@@ -2484,6 +2622,33 @@ llvm::Value* CodeGenerator::extractMaybeValueForPrint(llvm::Value* maybe_alloca,
 
 void CodeGenerator::codegenDoStmt(const DoStmt& stmt) {
     llvm::Function* function = builder_->GetInsertBlock()->getParent();
+    
+    if (dynamic_cast<const NilLiteral*>(stmt.value.get())) {
+        auto saved_named_values = named_values_;
+        auto saved_variable_types = variable_types_;
+
+        llvm::BasicBlock* scope_block = llvm::BasicBlock::Create(*context_, "scope_block", function);
+        llvm::BasicBlock* after_scope = llvm::BasicBlock::Create(*context_, "after_scope", function);
+        
+        builder_->CreateBr(scope_block);
+        builder_->SetInsertPoint(scope_block);
+        
+        // generate the body statements
+        for (const auto& s : stmt.then_branch) {
+            codegen(*s);
+        }
+        
+        if (!builder_->GetInsertBlock()->getTerminator()) {
+            builder_->CreateBr(after_scope);
+        }
+        
+        // restore variable scope (variable defined in block go out of scope)
+        named_values_ = saved_named_values;
+        variable_types_ = saved_variable_types;
+        
+        builder_->SetInsertPoint(after_scope);
+        return;
+    }
 
     if (auto* id = dynamic_cast<const Identifier*>(stmt.value.get())) {
         llvm::Value* maybe_alloca = named_values_[id->name];
@@ -2514,14 +2679,17 @@ void CodeGenerator::codegenDoStmt(const DoStmt& stmt) {
             "has_value"
         );
         
-        // create blocks
+        // save variable scope for maybe branches
+        auto saved_then_named_values = named_values_;
+        auto saved_then_variable_types = variable_types_;
+        
         llvm::BasicBlock* then_block = llvm::BasicBlock::Create(*context_, "do_then", function);
         llvm::BasicBlock* else_block = llvm::BasicBlock::Create(*context_, "do_else", function);
         llvm::BasicBlock* merge_block = llvm::BasicBlock::Create(*context_, "do_merge", function);
         
         builder_->CreateCondBr(has_value, then_block, else_block);
         
-        // generate then branch
+        // generate then branch with scoped variables
         builder_->SetInsertPoint(then_block);
         for (const auto& s : stmt.then_branch) {
             codegen(*s);
@@ -2530,7 +2698,10 @@ void CodeGenerator::codegenDoStmt(const DoStmt& stmt) {
             builder_->CreateBr(merge_block);
         }
         
-        // generate else branch
+        // restore scope and generate else branch
+        named_values_ = saved_then_named_values;
+        variable_types_ = saved_then_variable_types;
+        
         builder_->SetInsertPoint(else_block);
         for (const auto& s : stmt.else_branch) {
             codegen(*s);
@@ -2538,6 +2709,10 @@ void CodeGenerator::codegenDoStmt(const DoStmt& stmt) {
         if (!builder_->GetInsertBlock()->getTerminator()) {
             builder_->CreateBr(merge_block);
         }
+        
+        // restore original scope after both branches
+        named_values_ = saved_then_named_values;
+        variable_types_ = saved_then_variable_types;
         
         builder_->SetInsertPoint(merge_block);
         
@@ -2549,7 +2724,7 @@ void CodeGenerator::codegenDoStmt(const DoStmt& stmt) {
             throw std::runtime_error("Do statement requires a maybe type value");
         }
         
-        // store the value in an alloca so we can use GEP on it
+        // store the value in an alloca so can use GEP on it
         llvm::AllocaInst* temp_alloca = builder_->CreateAlloca(maybe_val->getType(), nullptr, "do_temp");
         builder_->CreateStore(maybe_val, temp_alloca);
         
@@ -2566,6 +2741,10 @@ void CodeGenerator::codegenDoStmt(const DoStmt& stmt) {
             "has_value"
         );
         
+        // save variable scope
+        auto saved_then_named_values = named_values_;
+        auto saved_then_variable_types = variable_types_;
+        
         // create blocks
         llvm::BasicBlock* then_block = llvm::BasicBlock::Create(*context_, "do_then", function);
         llvm::BasicBlock* else_block = llvm::BasicBlock::Create(*context_, "do_else", function);
@@ -2582,7 +2761,10 @@ void CodeGenerator::codegenDoStmt(const DoStmt& stmt) {
             builder_->CreateBr(merge_block);
         }
         
-        // generate else branch
+        // restore scope and generate else branch
+        named_values_ = saved_then_named_values;
+        variable_types_ = saved_then_variable_types;
+        
         builder_->SetInsertPoint(else_block);
         for (const auto& s : stmt.else_branch) {
             codegen(*s);
@@ -2591,10 +2773,14 @@ void CodeGenerator::codegenDoStmt(const DoStmt& stmt) {
             builder_->CreateBr(merge_block);
         }
         
+        // restore original scope
+        named_values_ = saved_then_named_values;
+        variable_types_ = saved_then_variable_types;
+        
         builder_->SetInsertPoint(merge_block);
         
     } else {
-        throw std::runtime_error("Do statement requires an identifier or function call");
+        throw std::runtime_error("Do statement requires an identifier, function call, or scoped block");
     }
 }
 
@@ -2929,6 +3115,192 @@ llvm::Type* CodeGenerator::getVoidType() {
 
 llvm::Type* CodeGenerator::getInt8PtrType() {
     return llvm::PointerType::getUnqual(*context_);
+}
+
+llvm::Value* CodeGenerator::concatenateStrings(llvm::Value* left, llvm::Value* right, bool add_space) {
+    // get or declare strlen function
+    llvm::FunctionType* strlen_type = llvm::FunctionType::get(
+        llvm::Type::getInt64Ty(*context_),
+        {llvm::PointerType::getUnqual(*context_)},
+        false
+    );
+    llvm::Function* strlen_func = module_->getFunction("strlen");
+    if (!strlen_func) {
+        strlen_func = llvm::Function::Create(
+            strlen_type,
+            llvm::Function::ExternalLinkage,
+            "strlen",
+            module_.get()
+        );
+    }
+    
+    // get or declare malloc function
+    llvm::FunctionType* malloc_type = llvm::FunctionType::get(
+        llvm::PointerType::getUnqual(*context_),
+        {llvm::Type::getInt64Ty(*context_)},
+        false
+    );
+    llvm::Function* malloc_func = module_->getFunction("malloc");
+    if (!malloc_func) {
+        malloc_func = llvm::Function::Create(
+            malloc_type,
+            llvm::Function::ExternalLinkage,
+            "malloc",
+            module_.get()
+        );
+    }
+    
+    // get or declare strcpy function
+    llvm::FunctionType* strcpy_type = llvm::FunctionType::get(
+        llvm::PointerType::getUnqual(*context_),
+        {llvm::PointerType::getUnqual(*context_), llvm::PointerType::getUnqual(*context_)},
+        false
+    );
+    llvm::Function* strcpy_func = module_->getFunction("strcpy");
+    if (!strcpy_func) {
+        strcpy_func = llvm::Function::Create(
+            strcpy_type,
+            llvm::Function::ExternalLinkage,
+            "strcpy",
+            module_.get()
+        );
+    }
+    
+    // get or declare strcat function
+    llvm::FunctionType* strcat_type = llvm::FunctionType::get(
+        llvm::PointerType::getUnqual(*context_),
+        {llvm::PointerType::getUnqual(*context_), llvm::PointerType::getUnqual(*context_)},
+        false
+    );
+    llvm::Function* strcat_func = module_->getFunction("strcat");
+    if (!strcat_func) {
+        strcat_func = llvm::Function::Create(
+            strcat_type,
+            llvm::Function::ExternalLinkage,
+            "strcat",
+            module_.get()
+        );
+    }
+    
+    // calculate lengths
+    llvm::Value* left_len = builder_->CreateCall(strlen_func, {left}, "left_len");
+    llvm::Value* right_len = builder_->CreateCall(strlen_func, {right}, "right_len");
+    
+    llvm::Value* total_len = builder_->CreateAdd(left_len, right_len, "total_len");
+    if (add_space) {
+        total_len = builder_->CreateAdd(
+            total_len, 
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(*context_), 2),
+            "total_len_with_space_and_null"
+        );
+    } else {
+        total_len = builder_->CreateAdd(
+            total_len, 
+            llvm::ConstantInt::get(llvm::Type::getInt64Ty(*context_), 1),
+            "total_len_plus_null"
+        );
+    }
+    
+    llvm::Value* result = builder_->CreateCall(malloc_func, {total_len}, "concat_result");
+
+    builder_->CreateCall(strcpy_func, {result, left});
+
+    if (add_space) {
+        llvm::Value* space_str = builder_->CreateGlobalStringPtr(" ");
+        builder_->CreateCall(strcat_func, {result, space_str});
+    }
+
+    builder_->CreateCall(strcat_func, {result, right});
+    
+    return result;
+}
+
+llvm::Value* CodeGenerator::convertToString(llvm::Value* value, const Expression* expr) {
+    // if already a pointer (string), return as-is
+    if (value->getType()->isPointerTy()) {
+        return value;
+    }
+    
+    // get or declare sprintf function
+    llvm::FunctionType* sprintf_type = llvm::FunctionType::get(
+        llvm::Type::getInt32Ty(*context_),
+        {llvm::PointerType::getUnqual(*context_), llvm::PointerType::getUnqual(*context_)},
+        true  // variadic
+    );
+    llvm::Function* sprintf_func = module_->getFunction("sprintf");
+    if (!sprintf_func) {
+        sprintf_func = llvm::Function::Create(
+            sprintf_type,
+            llvm::Function::ExternalLinkage,
+            "sprintf",
+            module_.get()
+        );
+    }
+    
+    // get or declare malloc
+    llvm::FunctionType* malloc_type = llvm::FunctionType::get(
+        llvm::PointerType::getUnqual(*context_),
+        {llvm::Type::getInt64Ty(*context_)},
+        false
+    );
+    llvm::Function* malloc_func = module_->getFunction("malloc");
+    if (!malloc_func) {
+        malloc_func = llvm::Function::Create(
+            malloc_type,
+            llvm::Function::ExternalLinkage,
+            "malloc",
+            module_.get()
+        );
+    }
+    
+    llvm::Value* buffer_size = llvm::ConstantInt::get(llvm::Type::getInt64Ty(*context_), 64);
+    llvm::Value* buffer = builder_->CreateCall(malloc_func, {buffer_size}, "str_buffer");
+    
+    // determine format string based on type
+    llvm::Type* value_type = value->getType();
+    llvm::Value* format_str;
+    
+    if (value_type->isIntegerTy(1)) {
+        llvm::Value* true_str = builder_->CreateGlobalStringPtr("true");
+        llvm::Value* false_str = builder_->CreateGlobalStringPtr("false");
+        return builder_->CreateSelect(value, true_str, false_str, "bool_str");
+    } else if (value_type->isIntegerTy()) {
+        bool is_unsigned = false;
+        if (auto* id = dynamic_cast<const Identifier*>(expr)) {
+            auto type_it = variable_types_.find(id->name);
+            if (type_it != variable_types_.end()) {
+                is_unsigned = (type_it->second.kind == Type::Kind::U8 ||
+                             type_it->second.kind == Type::Kind::U16 ||
+                             type_it->second.kind == Type::Kind::U32 ||
+                             type_it->second.kind == Type::Kind::U64);
+            }
+        }
+        
+        if (!value_type->isIntegerTy(64)) {
+            if (is_unsigned) {
+                value = builder_->CreateZExt(value, llvm::Type::getInt64Ty(*context_));
+            } else {
+                value = builder_->CreateSExt(value, llvm::Type::getInt64Ty(*context_));
+            }
+        }
+        
+        format_str = is_unsigned ? 
+            builder_->CreateGlobalStringPtr("%llu") :
+            builder_->CreateGlobalStringPtr("%lld");
+            
+    } else if (value_type->isFloatTy()) {
+        value = builder_->CreateFPExt(value, llvm::Type::getDoubleTy(*context_));
+        format_str = builder_->CreateGlobalStringPtr("%g");
+    } else if (value_type->isDoubleTy()) {
+        format_str = builder_->CreateGlobalStringPtr("%g");
+    } else {
+        throw std::runtime_error("Cannot convert type to string for concatenation");
+    }
+    
+    // call sprintf
+    builder_->CreateCall(sprintf_func, {buffer, format_str, value});
+    
+    return buffer;
 }
 
 llvm::Function* CodeGenerator::getFunction(const std::string& name) {

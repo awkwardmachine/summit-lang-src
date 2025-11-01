@@ -256,11 +256,44 @@ std::unique_ptr<Statement> Parser::ifStatement() {
 }
 
 std::unique_ptr<Statement> Parser::doStatement() {
-    auto value = expression();
+    // Check if this is a scoped block (no expression after 'do')
+    // We need to peek ahead to see if there's an expression or just newlines/statements
+    size_t saved_pos = current_;
+    skipNewlines();
+    
+    // If we immediately hit a statement keyword or identifier followed by assignment/call,
+    // this is likely a scoped block, not a maybe expression
+    bool is_scoped_block = false;
+    
+    if (check(TokenType::VAR) || check(TokenType::FIXED) || 
+        check(TokenType::FUNC) || check(TokenType::IF) ||
+        check(TokenType::RET) || check(TokenType::CHANCE) ||
+        check(TokenType::DO) || check(TokenType::USING)) {
+        is_scoped_block = true;
+    }
+    
+    // Reset position to try parsing expression
+    current_ = saved_pos;
+    
+    std::unique_ptr<Expression> value = nullptr;
+    
+    if (!is_scoped_block) {
+        // Try to parse an expression
+        try {
+            skipNewlines();
+            if (!check(TokenType::END) && !check(TokenType::ELSE)) {
+                value = expression();
+            }
+        } catch (...) {
+            // If expression parsing fails, treat as scoped block
+            is_scoped_block = true;
+            value = nullptr;
+        }
+    }
     
     skipNewlines();
     
-    // parse then branch
+    // Parse the body
     std::vector<std::unique_ptr<Statement>> then_branch;
     while (!check(TokenType::END) && !check(TokenType::ELSE) && !isAtEnd()) {
         skipNewlines();
@@ -269,7 +302,7 @@ std::unique_ptr<Statement> Parser::doStatement() {
         skipNewlines();
     }
     
-    // parse th optional else branch
+    // Parse optional else branch
     std::vector<std::unique_ptr<Statement>> else_branch;
     if (match(TokenType::ELSE)) {
         skipNewlines();
@@ -282,6 +315,11 @@ std::unique_ptr<Statement> Parser::doStatement() {
     }
     
     consume(TokenType::END, "Expected 'end' after do statement");
+    
+    // If no value expression, create a null literal to indicate scoped block
+    if (!value) {
+        value = std::make_unique<NilLiteral>();
+    }
     
     return std::make_unique<DoStmt>(std::move(value), std::move(then_branch), std::move(else_branch));
 }
@@ -626,7 +664,7 @@ std::unique_ptr<Expression> Parser::comparison() {
 }
 
 std::unique_ptr<Expression> Parser::expression() {
-    return comparison();
+    return assignment();
 }
 
 std::unique_ptr<Expression> Parser::assignment() {
@@ -634,8 +672,9 @@ std::unique_ptr<Expression> Parser::assignment() {
     
     if (match(TokenType::ASSIGN)) {
         if (auto* id = dynamic_cast<Identifier*>(expr.get())) {
+            std::string var_name = id->name;
             auto value = assignment();
-            return std::make_unique<AssignmentExpr>(id->name, std::move(value));
+            return std::make_unique<AssignmentExpr>(var_name, std::move(value));
         } else {
             throw std::runtime_error("Invalid assignment target at line " + std::to_string(previous().line));
         }
@@ -647,16 +686,31 @@ std::unique_ptr<Expression> Parser::assignment() {
 std::unique_ptr<Expression> Parser::addition() {
     auto expr = multiplication();
     
-    while (match(TokenType::PLUS) || match(TokenType::MINUS)) {
+    while (match(TokenType::PLUS) || match(TokenType::MINUS) || match(TokenType::COMMA)) {
         std::string op = previous().lexeme;
         int op_line = previous().line;
         auto right = multiplication();
-        
-        // type check to prevent mixing floats and ints without explicit cast
+
         auto left_type = inferExpressionType(expr.get());
         auto right_type = inferExpressionType(right.get());
         
+        // handle string concatenation with + or ,
         if (left_type.has_value() && right_type.has_value()) {
+            bool left_is_string = (left_type.value().kind == Type::Kind::STRING);
+            bool right_is_string = (right_type.value().kind == Type::Kind::STRING);
+            
+            if ((op == "+" || op == ",") && (left_is_string || right_is_string)) {
+                expr = std::make_unique<BinaryOp>(std::move(expr), op, std::move(right));
+                continue;
+            }
+            
+            if (op == ",") {
+                throw std::runtime_error(
+                    "Type error at line " + std::to_string(op_line) + 
+                    ": Comma operator can only be used for string concatenation"
+                );
+            }
+
             bool left_is_float = isFloatingPoint(left_type.value());
             bool right_is_float = isFloatingPoint(right_type.value());
             bool left_is_int = isInteger(left_type.value());

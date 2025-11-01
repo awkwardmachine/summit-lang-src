@@ -129,6 +129,10 @@ private:
                                            llvm::Type* maybe_type,
                                            const Type& summit_type);
 
+    // string concat helpers
+    llvm::Value* concatenateStrings(llvm::Value* left, llvm::Value* right, bool add_space);
+    llvm::Value* convertToString(llvm::Value* value, const Expression* expr);
+
 };
 
 }

@@ -18,6 +18,8 @@ private:
     size_t current_ = 0;
     std::map<std::string, Type> variable_types_;
     std::optional<Type> current_function_return_type_;
+    bool parsing_for_update_ = false;
+    bool in_for_loop_init_or_update_ = false;
     
     // type inference and analysis
     std::optional<Type> inferExpressionType(const Expression* expr);
@@ -52,6 +54,7 @@ private:
     std::unique_ptr<Statement> ifStatement();
     std::unique_ptr<Statement> chanceStatement();
     std::unique_ptr<Statement> doStatement();
+    std::unique_ptr<Statement> forStatement();
     
     // expression parsing (precedence climbing)
     std::unique_ptr<Expression> expression();
@@ -72,6 +75,10 @@ private:
     
     // type casting
     std::unique_ptr<Expression> cast();
+
+    // value helpers
+    bool isValueInRange(int64_t value, const Type& type);
+    bool isLargeValueInRange(const std::string& largeValue, const Type& type);
 };
 
 }

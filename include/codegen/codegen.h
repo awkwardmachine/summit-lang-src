@@ -96,6 +96,7 @@ private:
     void codegenIfStmt(const IfStmt& stmt);
     void codegenChanceStmt(const ChanceStmt& stmt);
     void codegenDoStmt(const DoStmt& stmt);
+    void codegenForStmt(const ForStmt& stmt);
     
     // type system utilities
     llvm::Type* getLLVMType(const Type& type);
@@ -132,7 +133,6 @@ private:
     // string concat helpers
     llvm::Value* concatenateStrings(llvm::Value* left, llvm::Value* right, bool add_space);
     llvm::Value* convertToString(llvm::Value* value, const Expression* expr);
-
 };
 
 }

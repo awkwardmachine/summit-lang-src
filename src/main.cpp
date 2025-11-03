@@ -31,6 +31,8 @@ void printUsage(const char* program_name) {
     std::cerr << "  -c             Compile to object file only\n";
     std::cerr << "  -nostdlib      Do not link with standard library\n";
     std::cerr << "  -window        Show console window when using generated executable\n";
+    std::cerr << "  -print-tokens  Print lexer tokens\n";
+    std::cerr << "  -print-ast     Print AST structure\n";
     std::cerr << "  -h, --help     Show this help message\n";
 }
 
@@ -64,6 +66,27 @@ std::string resolveInputFile(const std::string& input_arg) {
     throw std::runtime_error("Could not find file: " + input_arg + " or " + with_ext);
 }
 
+// function to print tokens
+void printTokens(const std::vector<Summit::Token>& tokens) {
+    std::cout << "TOKENS" << std::endl;
+    for (size_t i = 0; i < tokens.size(); i++) {
+        const auto& token = tokens[i];
+        std::cout << "[" << i << "] " << token.toString() << std::endl;
+    }
+    std::cout << "END TOKENS" << std::endl << std::endl;
+}
+
+// function to print AST using the toString methods on the ast def
+void printAST(const std::unique_ptr<Summit::Program>& ast) {
+    std::cout << "AST" << std::endl;
+    if (ast) {
+        std::cout << ast->toString(0);
+    } else {
+        std::cout << "AST is null!" << std::endl;
+    }
+    std::cout << "END AST" << std::endl << std::endl;
+}
+
 int main(int argc, char** argv) {
     if (argc < 2) {
         printUsage(argv[0]);
@@ -78,6 +101,8 @@ int main(int argc, char** argv) {
     bool no_stdlib = false;
     bool no_window = true;
     bool run_mode = false;
+    bool print_tokens = false;
+    bool print_ast = false;
     
     for (int i = 1; i < argc; i++) {
         std::string arg = argv[i];
@@ -108,6 +133,10 @@ int main(int argc, char** argv) {
             no_stdlib = true;
         } else if (arg == "-window") {
             no_window = false;
+        } else if (arg == "-print-tokens") {
+            print_tokens = true;
+        } else if (arg == "-print-ast") {
+            print_ast = true;
         } else if (arg[0] != '-') {
             input_file = arg;
         } else {
@@ -147,14 +176,31 @@ int main(int argc, char** argv) {
     try {
         // read the source file
         std::string source = readFile(input_file);
+        std::cout << "Compiling: " << input_file << std::endl;
         
         // run through the compilation pipeline
         // lexer -> parser -> codegen
         Summit::Lexer lexer(source);
         auto tokens = lexer.tokenize();
         
+        // print tokens if requested
+        if (print_tokens) {
+            printTokens(tokens);
+        }
+        
         Summit::Parser parser(std::move(tokens));
         auto ast = parser.parse();
+        
+        // print AST if requested
+        if (print_ast) {
+            printAST(ast);
+        }
+        
+        // stop if print tokens or ast
+        if (print_tokens || print_ast) {
+            std::cout << "Stopping after parsing (tokens/ast printing mode)" << std::endl;
+            return 0;
+        }
         
         Summit::CodeGenerator codegen;
         codegen.generate(*ast);
@@ -171,8 +217,10 @@ int main(int argc, char** argv) {
             }
             
             codegen.emitExecutable(output_file, libs, no_stdlib, no_window);
+            std::cout << "Executable created: " << output_file << std::endl;
             
             if (run_mode) {
+                std::cout << "Running: " << output_file << std::endl;
                 std::string run_cmd = output_file;
                 int result = std::system(run_cmd.c_str());
                 return result;

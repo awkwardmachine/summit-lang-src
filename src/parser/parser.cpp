@@ -6,7 +6,8 @@
 
 namespace Summit {
 
-Parser::Parser(std::vector<Token> tokens) : tokens_(std::move(tokens)) {}
+Parser::Parser(std::vector<Token> tokens) 
+    : tokens_(std::move(tokens)), current_(0), parsing_for_update_(false) {}
 
 std::unique_ptr<Program> Parser::parse() {
     auto program = std::make_unique<Program>();
@@ -256,13 +257,11 @@ std::unique_ptr<Statement> Parser::ifStatement() {
 }
 
 std::unique_ptr<Statement> Parser::doStatement() {
-    // Check if this is a scoped block (no expression after 'do')
-    // We need to peek ahead to see if there's an expression or just newlines/statements
+    // check if this is a scoped block
+    // we need to peek ahead to see if there's an expression or just newlines/statements
     size_t saved_pos = current_;
     skipNewlines();
     
-    // If we immediately hit a statement keyword or identifier followed by assignment/call,
-    // this is likely a scoped block, not a maybe expression
     bool is_scoped_block = false;
     
     if (check(TokenType::VAR) || check(TokenType::FIXED) || 
@@ -272,20 +271,19 @@ std::unique_ptr<Statement> Parser::doStatement() {
         is_scoped_block = true;
     }
     
-    // Reset position to try parsing expression
+    // reset position to try parsing expression
     current_ = saved_pos;
     
     std::unique_ptr<Expression> value = nullptr;
     
     if (!is_scoped_block) {
-        // Try to parse an expression
+        // try to parse a expression
         try {
             skipNewlines();
             if (!check(TokenType::END) && !check(TokenType::ELSE)) {
                 value = expression();
             }
         } catch (...) {
-            // If expression parsing fails, treat as scoped block
             is_scoped_block = true;
             value = nullptr;
         }
@@ -293,7 +291,7 @@ std::unique_ptr<Statement> Parser::doStatement() {
     
     skipNewlines();
     
-    // Parse the body
+    // parse te body
     std::vector<std::unique_ptr<Statement>> then_branch;
     while (!check(TokenType::END) && !check(TokenType::ELSE) && !isAtEnd()) {
         skipNewlines();
@@ -302,7 +300,7 @@ std::unique_ptr<Statement> Parser::doStatement() {
         skipNewlines();
     }
     
-    // Parse optional else branch
+    // parse optional else branch
     std::vector<std::unique_ptr<Statement>> else_branch;
     if (match(TokenType::ELSE)) {
         skipNewlines();
@@ -316,7 +314,7 @@ std::unique_ptr<Statement> Parser::doStatement() {
     
     consume(TokenType::END, "Expected 'end' after do statement");
     
-    // If no value expression, create a null literal to indicate scoped block
+    // of no value expression, create a null literal
     if (!value) {
         value = std::make_unique<NilLiteral>();
     }
@@ -443,8 +441,6 @@ std::unique_ptr<Statement> Parser::varDeclaration() {
     
     return std::make_unique<VarDecl>(name.lexeme, type, std::move(initializer), false);
 }
-// In parser.cpp, update the functionDeclaration() function
-// Find this section at the end of functionDeclaration():
 
 std::unique_ptr<Statement> Parser::functionDeclaration() {
     Token name = advance();
@@ -540,10 +536,534 @@ std::unique_ptr<Statement> Parser::functionDeclaration() {
 // statement parsing
 std::unique_ptr<Statement> Parser::statement() {
     if (match(TokenType::IF)) return ifStatement();
+    if (match(TokenType::FOR)) return forStatement();
     if (match(TokenType::RET)) return returnStatement();
     if (match(TokenType::CHANCE)) return chanceStatement();
     if (match(TokenType::DO)) return doStatement();
     return expressionStatement();
+}
+
+std::unique_ptr<Statement> Parser::forStatement() {
+    std::cout << "DEBUG: Entering forStatement() at line " << peek().line << std::endl;
+    
+    bool prev_in_for_loop_init_or_update = in_for_loop_init_or_update_;
+    in_for_loop_init_or_update_ = true;
+
+    std::vector<std::unique_ptr<Expression>> init_exprs;
+    std::string loop_var_name;
+    std::vector<std::string> loop_var_names;
+
+    // check if have an empty init clause
+    if (!check(TokenType::SEMICOLON)) {
+        std::cout << "DEBUG: Parsing first init item" << std::endl;
+
+        skipNewlines();
+        
+        if (check(TokenType::VAR)) {
+            std::cout << "DEBUG: Found VAR, consuming it" << std::endl;
+            advance();
+            
+            Token name = advance();
+            std::cout << "DEBUG: Got identifier: " << name.lexeme << std::endl;
+            
+            if (name.type != TokenType::IDENTIFIER) {
+                throw std::runtime_error("Expected variable name in for loop at line " + std::to_string(name.line));
+            }
+            
+            if (loop_var_name.empty()) {
+                loop_var_name = name.lexeme;
+            }
+            loop_var_names.push_back(name.lexeme);
+            
+            std::optional<Type> type = std::nullopt;
+            if (match(TokenType::COLON)) {
+                type = parseType();
+                if (!type) {
+                    throw std::runtime_error("Expected type after ':' at line " + std::to_string(peek().line));
+                }
+            }
+            
+            std::cout << "DEBUG: Expecting ASSIGN" << std::endl;
+            consume(TokenType::ASSIGN, "Expected '=' in for loop initialization");
+            std::cout << "DEBUG: Got ASSIGN, parsing initializer" << std::endl;
+            
+            auto initializer = expression();
+            std::cout << "DEBUG: Successfully parsed initializer for " << name.lexeme << std::endl;
+            
+            auto init = std::make_unique<AssignmentExpr>(name.lexeme, std::move(initializer));
+            
+            if (type.has_value()) {
+                variable_types_[name.lexeme] = type.value();
+            } else {
+                auto inferred = inferExpressionType(init.get());
+                if (inferred) {
+                    variable_types_[name.lexeme] = inferred.value();
+                }
+            }
+            
+            init_exprs.push_back(std::move(init));
+            std::cout << "DEBUG: Successfully parsed first var declaration" << std::endl;
+        } else {
+            // regular expression
+            auto init = expression();
+            
+            if (loop_var_name.empty()) {
+                if (auto* assign = dynamic_cast<AssignmentExpr*>(init.get())) {
+                    loop_var_name = assign->name;
+                    loop_var_names.push_back(assign->name);
+                }
+            }
+            
+            init_exprs.push_back(std::move(init));
+        }
+
+        while (check(TokenType::COMMA)) {
+            std::cout << "DEBUG: Found COMMA at position " << current_ << ", consuming it" << std::endl;
+            advance();
+            skipNewlines();
+            
+            std::cout << "DEBUG: After comma, current token: " << peek().lexeme << " type: " << static_cast<int>(peek().type) << std::endl;
+            
+            if (check(TokenType::VAR)) {
+                std::cout << "DEBUG: Found VAR after comma, consuming it" << std::endl;
+                advance();
+                
+                Token name = advance();
+                std::cout << "DEBUG: Got identifier after comma: " << name.lexeme << std::endl;
+                
+                if (name.type != TokenType::IDENTIFIER) {
+                    throw std::runtime_error("Expected variable name in for loop at line " + std::to_string(name.line));
+                }
+                
+                loop_var_names.push_back(name.lexeme);
+                
+                std::optional<Type> type = std::nullopt;
+                if (match(TokenType::COLON)) {
+                    type = parseType();
+                    if (!type) {
+                        throw std::runtime_error("Expected type after ':' at line " + std::to_string(peek().line));
+                    }
+                }
+                
+                std::cout << "DEBUG: Expecting ASSIGN after comma" << std::endl;
+                consume(TokenType::ASSIGN, "Expected '=' in for loop initialization");
+                std::cout << "DEBUG: Got ASSIGN after comma, parsing initializer" << std::endl;
+                
+                auto initializer = expression();
+                
+                // range checking for integer types
+                if (type.has_value() && isInteger(type.value())) {
+                    if (auto* num_lit = dynamic_cast<NumberLiteral*>(initializer.get())) {
+                        if (num_lit->isRegularInteger()) {
+                            int64_t value = num_lit->getIntValue();
+                            if (!isValueInRange(value, type.value())) {
+                                throw std::runtime_error(
+                                    "Initial value " + std::to_string(value) + 
+                                    " is out of range for type " + type.value().toString() + 
+                                    " at line " + std::to_string(name.line)
+                                );
+                            }
+                        } else if (num_lit->isLargeInteger()) {
+                            const std::string& largeInt = num_lit->getLargeIntValue();
+                            if (!isLargeValueInRange(largeInt, type.value())) {
+                                throw std::runtime_error(
+                                    "Initial value " + largeInt + 
+                                    " is out of range for type " + type.value().toString() + 
+                                    " at line " + std::to_string(name.line)
+                                );
+                            }
+                        }
+                    }
+                }
+                
+                std::cout << "DEBUG: Successfully parsed initializer after comma for " << name.lexeme << std::endl;
+                
+                auto init = std::make_unique<AssignmentExpr>(name.lexeme, std::move(initializer));
+                
+                if (type.has_value()) {
+                    variable_types_[name.lexeme] = type.value();
+                } else {
+                    auto inferred = inferExpressionType(init.get());
+                    if (inferred) {
+                        variable_types_[name.lexeme] = inferred.value();
+                    }
+                }
+                
+                init_exprs.push_back(std::move(init));
+                std::cout << "DEBUG: Successfully parsed var declaration after comma" << std::endl;
+            } else {
+                std::cout << "DEBUG: Parsing expression after comma" << std::endl;
+                auto init = expression();
+                
+                if (auto* assign = dynamic_cast<AssignmentExpr*>(init.get())) {
+                    loop_var_names.push_back(assign->name);
+                }
+                
+                init_exprs.push_back(std::move(init));
+            }
+        }
+    }
+    
+    std::cout << "DEBUG: Finished init parsing with " << init_exprs.size() << " expressions" << std::endl;
+    std::cout << "DEBUG: Loop variables found: " << loop_var_names.size() << std::endl;
+    
+    skipNewlines();
+    consume(TokenType::SEMICOLON, "Expected ';' after for loop initialization");
+    skipNewlines();
+
+    in_for_loop_init_or_update_ = false;
+    
+    std::unique_ptr<Expression> condition = nullptr;
+    bool has_explicit_condition = true;
+
+    std::cout << "DEBUG: Before condition parsing, current token: " << peek().lexeme << " type: " << static_cast<int>(peek().type) << std::endl;
+
+    if (check(TokenType::SEMICOLON)) {
+        std::cout << "DEBUG: Empty condition" << std::endl;
+        condition = std::make_unique<BooleanLiteral>(true);
+    } else if (match(TokenType::WHILE)) {
+        std::cout << "DEBUG: Found WHILE keyword" << std::endl;
+        condition = expression();
+    } else if (match(TokenType::TO)) {
+        std::cout << "DEBUG: Found TO keyword" << std::endl;
+        has_explicit_condition = false;
+        
+        if (loop_var_names.empty()) {
+            throw std::runtime_error("'to' syntax requires variable declaration in initialization at line " + std::to_string(peek().line));
+        }
+        
+        auto end_value = expression();
+        
+        // range check the end value against the loop variable type
+        if (init_exprs.size() == 1) {
+            if (auto* assign = dynamic_cast<const AssignmentExpr*>(init_exprs[0].get())) {
+                std::string loop_var = assign->name;
+                auto type_it = variable_types_.find(loop_var);
+                
+                if (type_it != variable_types_.end() && isInteger(type_it->second)) {
+                    if (auto* end_num = dynamic_cast<NumberLiteral*>(end_value.get())) {
+                        if (end_num->isRegularInteger()) {
+                            int64_t end_val = end_num->getIntValue();
+                            if (!isValueInRange(end_val, type_it->second)) {
+                                throw std::runtime_error(
+                                    "End value " + std::to_string(end_val) + 
+                                    " in 'to' clause is out of range for type " + 
+                                    type_it->second.toString() + " at line " + std::to_string(peek().line)
+                                );
+                            }
+                        } else if (end_num->isLargeInteger()) {
+                            const std::string& largeInt = end_num->getLargeIntValue();
+                            if (!isLargeValueInRange(largeInt, type_it->second)) {
+                                throw std::runtime_error(
+                                    "End value " + largeInt + 
+                                    " in 'to' clause is out of range for type " + 
+                                    type_it->second.toString() + " at line " + std::to_string(peek().line)
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        bool counting_down = false;
+        
+        if (init_exprs.size() == 1) {
+            if (auto* assign = dynamic_cast<const AssignmentExpr*>(init_exprs[0].get())) {
+                if (auto* init_num = dynamic_cast<const NumberLiteral*>(assign->value.get())) {
+                    if (auto* end_num = dynamic_cast<const NumberLiteral*>(end_value.get())) {
+                        if (init_num->isRegularInteger() && end_num->isRegularInteger()) {
+                            // If start > end, we're counting down
+                            counting_down = init_num->getIntValue() > end_num->getIntValue();
+                            std::cout << "DEBUG: Detected direction from values: " << init_num->getIntValue() 
+                                    << " > " << end_num->getIntValue() << " = " << counting_down << std::endl;
+                        } else if ((init_num->isFloat() || init_num->isRegularInteger()) && 
+                                   (end_num->isFloat() || end_num->isRegularInteger())) {
+                            double init_val = init_num->isFloat() ? init_num->getFloatValue() : static_cast<double>(init_num->getIntValue());
+                            double end_val = end_num->isFloat() ? end_num->getFloatValue() : static_cast<double>(end_num->getIntValue());
+                            counting_down = init_val > end_val;
+                            std::cout << "DEBUG: Detected direction from float values: " << init_val 
+                                    << " > " << end_val << " = " << counting_down << std::endl;
+                        }
+                    }
+                }
+            }
+        }
+        
+        if (!counting_down && init_exprs.size() == 1) {
+            size_t saved_pos = current_;
+            
+            skipNewlines();
+            if (peek().lexeme == "step") {
+                advance();
+                skipNewlines();
+                
+                // check if the first step value is negative
+                if (check(TokenType::MINUS)) {
+                    counting_down = true;
+                    std::cout << "DEBUG: Fallback - detected negative step from '-' token" << std::endl;
+                } else if (check(TokenType::NUMBER)) {
+                    Token step_token = peek();
+                    if (step_token.isRegularInteger() && step_token.getIntValue() < 0) {
+                        counting_down = true;
+                        std::cout << "DEBUG: Fallback - detected negative step: " << step_token.getIntValue() << std::endl;
+                    } else if (step_token.isFloat() && step_token.getFloatValue() < 0) {
+                        counting_down = true;
+                        std::cout << "DEBUG: Fallback - detected negative float step: " << step_token.getFloatValue() << std::endl;
+                    }
+                }
+            }
+            
+            // restore position
+            current_ = saved_pos;
+        }
+        
+        // create the appropriate condition based on direction
+        if (counting_down) {
+            // counting down
+            condition = std::make_unique<BinaryOp>(
+                std::make_unique<Identifier>(loop_var_names[0]),
+                ">=",
+                std::move(end_value)
+            );
+            std::cout << "DEBUG: Created >= condition for countdown" << std::endl;
+        } else {
+            // counting up
+            condition = std::make_unique<BinaryOp>(
+                std::make_unique<Identifier>(loop_var_names[0]),
+                "<=",
+                std::move(end_value)
+            );
+            std::cout << "DEBUG: Created <= condition for countup" << std::endl;
+        }
+    } else {
+        std::cout << "DEBUG: Parsing direct condition expression" << std::endl;
+        condition = expression();
+    }
+    
+    std::cout << "DEBUG: Finished condition parsing" << std::endl;
+    consume(TokenType::SEMICOLON, "Expected ';' after for loop condition");
+    skipNewlines();
+    
+    in_for_loop_init_or_update_ = true;
+    
+    std::vector<std::unique_ptr<Expression>> update_exprs;
+
+    std::cout << "DEBUG: Before step parsing, current token: " << peek().lexeme << " type: " << static_cast<int>(peek().type) << std::endl;
+
+    // check for step keyword
+    if (peek().lexeme == "step") {
+        std::cout << "DEBUG: Found STEP keyword, consuming it" << std::endl;
+        advance();
+        skipNewlines();
+        
+        // check for empty step clause
+        if (!check(TokenType::DO)) {
+            std::cout << "DEBUG: Parsing first update item" << std::endl;
+            
+            // check if using simplified syntax or explicit syntax
+            bool using_simplified_syntax = check(TokenType::NUMBER) || check(TokenType::MINUS);
+            
+            if (using_simplified_syntax) {
+                std::cout << "DEBUG: Using simplified step syntax (numbers)" << std::endl;
+                
+                // parse step values
+                for (size_t i = 0; i < loop_var_names.size(); i++) {
+                    if (check(TokenType::NUMBER) || check(TokenType::MINUS)) {
+                        std::unique_ptr<Expression> step_value;
+                        
+                        // handle negative numbers
+                        if (check(TokenType::MINUS)) {
+                            advance();
+                            Token step_token = advance();
+                            
+                            if (step_token.type != TokenType::NUMBER) {
+                                throw std::runtime_error("Expected number after '-' in step clause at line " + std::to_string(step_token.line));
+                            }
+                            
+                            // create negative number literal
+                            if (step_token.isRegularInteger()) {
+                                step_value = std::make_unique<NumberLiteral>(-step_token.getIntValue());
+                            } else if (step_token.isFloat()) {
+                                step_value = std::make_unique<NumberLiteral>(-step_token.getFloatValue());
+                            } else {
+                                throw std::runtime_error("Invalid step value at line " + std::to_string(step_token.line));
+                            }
+                        } else {
+                            Token step_token = advance();
+                            
+                            if (step_token.isRegularInteger()) {
+                                step_value = std::make_unique<NumberLiteral>(step_token.getIntValue());
+                            } else if (step_token.isFloat()) {
+                                step_value = std::make_unique<NumberLiteral>(step_token.getFloatValue());
+                            } else {
+                                throw std::runtime_error("Invalid step value at line " + std::to_string(step_token.line));
+                            }
+                        }
+                        
+                        update_exprs.push_back(std::move(step_value));
+                        
+                        if (i < loop_var_names.size() - 1 && check(TokenType::COMMA)) {
+                            advance();
+                            skipNewlines();
+                        }
+                    } else {
+                        // default step of one
+                        update_exprs.push_back(std::make_unique<NumberLiteral>(static_cast<int64_t>(1)));
+                    }
+                }
+            } else {
+                std::cout << "DEBUG: Using explicit step syntax (expressions)" << std::endl;
+
+                if (check(TokenType::VAR)) {
+                    advance();
+                    
+                    Token var_name = advance();
+                    if (var_name.type != TokenType::IDENTIFIER) {
+                        throw std::runtime_error("Expected variable name in step clause at line " + std::to_string(var_name.line));
+                    }
+                    
+                    std::optional<Type> type = std::nullopt;
+                    if (match(TokenType::COLON)) {
+                        type = parseType();
+                        if (!type) {
+                            throw std::runtime_error("Expected type after ':' at line " + std::to_string(peek().line));
+                        }
+                    }
+                    
+                    consume(TokenType::ASSIGN, "Expected '=' in step clause");
+                    
+                    bool prev_parsing_for_update = parsing_for_update_;
+                    parsing_for_update_ = true;
+                    auto value_expr = expression();
+                    parsing_for_update_ = prev_parsing_for_update;
+                    
+                    auto assign_expr = std::make_unique<AssignmentExpr>(var_name.lexeme, std::move(value_expr));
+                    
+                    if (type.has_value()) {
+                        variable_types_[var_name.lexeme] = type.value();
+                    }
+                    
+                    update_exprs.push_back(std::move(assign_expr));
+                } else {
+                    parsing_for_update_ = true;
+                    update_exprs.push_back(expression());
+                    parsing_for_update_ = false;
+                }
+
+                while (check(TokenType::COMMA)) {
+                    advance();
+                    skipNewlines();
+                    
+                    if (check(TokenType::VAR)) {
+                        advance();
+                        
+                        Token var_name = advance();
+                        if (var_name.type != TokenType::IDENTIFIER) {
+                            throw std::runtime_error("Expected variable name in step clause at line " + std::to_string(var_name.line));
+                        }
+                        
+                        std::optional<Type> type = std::nullopt;
+                        if (match(TokenType::COLON)) {
+                            type = parseType();
+                            if (!type) {
+                                throw std::runtime_error("Expected type after ':' at line " + std::to_string(peek().line));
+                            }
+                        }
+                        
+                        consume(TokenType::ASSIGN, "Expected '=' in step clause");
+                        
+                        bool prev_parsing_for_update = parsing_for_update_;
+                        parsing_for_update_ = true;
+                        auto value_expr = expression();
+                        parsing_for_update_ = prev_parsing_for_update;
+                        
+                        auto assign_expr = std::make_unique<AssignmentExpr>(var_name.lexeme, std::move(value_expr));
+                        
+                        if (type.has_value()) {
+                            variable_types_[var_name.lexeme] = type.value();
+                        }
+                        
+                        update_exprs.push_back(std::move(assign_expr));
+                    } else {
+                        parsing_for_update_ = true;
+                        update_exprs.push_back(expression());
+                        parsing_for_update_ = false;
+                    }
+                }
+            }
+        }
+    } else {
+        std::cout << "DEBUG: Expected 'step' but found: " << peek().lexeme << " type: " << static_cast<int>(peek().type) << std::endl;
+        throw std::runtime_error("Expected 'step' in for loop at line " + std::to_string(peek().line));
+    }
+    
+    skipNewlines();
+    consume(TokenType::DO, "Expected 'do' after for loop header");
+    skipNewlines();
+    
+    in_for_loop_init_or_update_ = false;
+    
+    // parse body
+    std::vector<std::unique_ptr<Statement>> body;
+    while (!check(TokenType::END) && !isAtEnd()) {
+        skipNewlines();
+        if (check(TokenType::END)) break;
+        body.push_back(declaration());
+        skipNewlines();
+    }
+    
+    consume(TokenType::END, "Expected 'end' after for loop body");
+    
+    // restore flag
+    in_for_loop_init_or_update_ = prev_in_for_loop_init_or_update;
+    
+    return std::make_unique<ForStmt>(
+        std::move(init_exprs),
+        std::move(condition),
+        std::move(update_exprs),
+        std::move(body),
+        has_explicit_condition
+    );
+}
+
+// helper functions for range checking
+bool Parser::isValueInRange(int64_t value, const Type& type) {
+    switch (type.kind) {
+        case Type::Kind::I8:
+            return value >= -128 && value <= 127;
+        case Type::Kind::U8:
+            return value >= 0 && value <= 255;
+        case Type::Kind::I16:
+            return value >= -32768 && value <= 32767;
+        case Type::Kind::U16:
+            return value >= 0 && value <= 65535;
+        case Type::Kind::I32:
+            return value >= -2147483648LL && value <= 2147483647LL;
+        case Type::Kind::U32:
+            return value >= 0 && value <= 4294967295LL;
+        case Type::Kind::I64:
+        case Type::Kind::U64:
+            return true;
+        case Type::Kind::BOOL:
+            return value == 0 || value == 1;
+        default:
+            return true;
+    }
+}
+
+bool Parser::isLargeValueInRange(const std::string& largeValue, const Type& type) {
+    // basically for really big numbers that don't fit in int64_t
+    if (type.kind != Type::Kind::U64) {
+        return false;
+    }
+    
+    try {
+        uint64_t value = std::stoull(largeValue);
+        return true;
+    } catch (const std::out_of_range&) {
+        return false;
+    }
 }
 
 std::unique_ptr<Statement> Parser::chanceStatement() {
@@ -649,6 +1169,7 @@ std::unique_ptr<Statement> Parser::expressionStatement() {
     return std::make_unique<ExpressionStmt>(std::move(expr));
 }
 
+
 std::unique_ptr<Expression> Parser::comparison() {
     auto expr = addition();
     
@@ -664,6 +1185,7 @@ std::unique_ptr<Expression> Parser::comparison() {
 }
 
 std::unique_ptr<Expression> Parser::expression() {
+    std::cout << "DEBUG: expression() - current token: " << peek().lexeme << " type: " << static_cast<int>(peek().type) << std::endl;
     return assignment();
 }
 
@@ -686,7 +1208,8 @@ std::unique_ptr<Expression> Parser::assignment() {
 std::unique_ptr<Expression> Parser::addition() {
     auto expr = multiplication();
     
-    while (match(TokenType::PLUS) || match(TokenType::MINUS) || match(TokenType::COMMA)) {
+    while (match(TokenType::PLUS) || match(TokenType::MINUS) || 
+           (!in_for_loop_init_or_update_ && match(TokenType::COMMA))) {
         std::string op = previous().lexeme;
         int op_line = previous().line;
         auto right = multiplication();
@@ -729,7 +1252,6 @@ std::unique_ptr<Expression> Parser::addition() {
     
     return expr;
 }
-
 std::unique_ptr<Expression> Parser::multiplication() {
     auto expr = unary();
     

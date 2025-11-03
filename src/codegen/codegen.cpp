@@ -453,12 +453,10 @@ std::string CodeGenerator::extractFunctionPath(const Expression* expr) {
 }
 
 // main code generation entry point
-
 void CodeGenerator::generate(const Program& program) {
-    // Seed random number generator for chance statements
+    // seed random number generator for chance statements
     seedRandomGenerator();
     
-    // Rest of your existing generate code...
     for (const auto& stmt : program.statements) {
         codegen(*stmt);
     }
@@ -955,7 +953,6 @@ llvm::Value* CodeGenerator::codegenNumberLiteral(const NumberLiteral& expr) {
         try {
             uint64_t unsigned_value = std::stoull(largeInt);
             if (unsigned_value > INT64_MAX) {
-                // this caused issues in early testing, hope it doesn't come back to bite when adding 128 bit support
                 return llvm::ConstantInt::get(*context_, 
                     llvm::APInt(64, unsigned_value, false));
             } else {
@@ -968,17 +965,10 @@ llvm::Value* CodeGenerator::codegenNumberLiteral(const NumberLiteral& expr) {
         }
     } else if (expr.isRegularInteger()) {
         int64_t value = expr.getIntValue();
-
-        // pick the smallest type that fits
-        if (value >= -128 && value <= 127) {
-            return llvm::ConstantInt::get(*context_, llvm::APInt(8, value, true));
-        } else if (value >= -32768 && value <= 32767) {
-            return llvm::ConstantInt::get(*context_, llvm::APInt(16, value, true));
-        } else if (value >= -2147483648 && value <= 2147483647) {
-            return llvm::ConstantInt::get(*context_, llvm::APInt(32, value, true));
-        } else {
-            return llvm::ConstantInt::get(*context_, llvm::APInt(64, value, true));
-        }
+        
+        // For for loops and general numeric operations, use i64 by default
+        // This prevents overflow in cases like Fibonacci sequences
+        return llvm::ConstantInt::get(*context_, llvm::APInt(64, value, true));
     } else {
         return llvm::ConstantFP::get(getDoubleType(), 
             llvm::APFloat(expr.getFloatValue()));
@@ -1157,6 +1147,273 @@ llvm::Value* CodeGenerator::codegenUnaryOp(const UnaryOp& expr) {
     }
     
     throw std::runtime_error("Unknown unary operator: " + expr.op);
+}
+
+void CodeGenerator::codegenForStmt(const ForStmt& stmt) {
+    llvm::Function* function = builder_->GetInsertBlock()->getParent();
+    
+    // save th current variable scope
+    auto saved_named_values = named_values_;
+    auto saved_variable_types = variable_types_;
+    
+    // create the basic blocks
+    llvm::BasicBlock* init_block = llvm::BasicBlock::Create(*context_, "for_init", function);
+    llvm::BasicBlock* cond_block = llvm::BasicBlock::Create(*context_, "for_cond", function);
+    llvm::BasicBlock* body_block = llvm::BasicBlock::Create(*context_, "for_body", function);
+    llvm::BasicBlock* update_block = llvm::BasicBlock::Create(*context_, "for_update", function);
+    llvm::BasicBlock* end_block = llvm::BasicBlock::Create(*context_, "for_end", function);
+    
+    builder_->CreateBr(init_block);
+    
+    builder_->SetInsertPoint(init_block);
+    
+    std::vector<std::string> loop_var_names;
+
+    if (stmt.init_exprs.size() == 1) {
+        if (auto* assign = dynamic_cast<const AssignmentExpr*>(stmt.init_exprs[0].get())) {
+            // variable declaration
+            std::string var_name = assign->name;
+            llvm::Value* init_val = codegen(*assign->value);
+            
+            // use i64 for loop variables
+            Type summit_type = Type::i64();
+            llvm::Type* var_type = getLLVMType(summit_type);
+            
+            if (init_val->getType() != var_type) {
+                init_val = castValue(init_val, var_type, summit_type);
+            }
+            
+            llvm::AllocaInst* alloca = builder_->CreateAlloca(var_type, nullptr, var_name);
+            builder_->CreateStore(init_val, alloca);
+            named_values_[var_name] = alloca;
+            variable_types_[var_name] = summit_type;
+            loop_var_names.push_back(var_name);
+        } else {
+            // any other single expression
+            codegen(*stmt.init_exprs[0]);
+        }
+    } else {
+        for (const auto& init_expr : stmt.init_exprs) {
+            if (auto* assign = dynamic_cast<const AssignmentExpr*>(init_expr.get())) {
+                std::string var_name = assign->name;
+                llvm::Value* init_val = codegen(*assign->value);
+                
+                // force the i64 for for loop variables
+                Type summit_type = Type::i64();
+                llvm::Type* var_type = getLLVMType(summit_type);
+                
+                if (init_val->getType() != var_type) {
+                    init_val = castValue(init_val, var_type, summit_type);
+                }
+                
+                // check if variable already exists
+                auto existing_var = named_values_.find(var_name);
+                if (existing_var != named_values_.end()) {
+                    llvm::Value* var = existing_var->second;
+                    auto* alloca = llvm::dyn_cast<llvm::AllocaInst>(var);
+                    if (!alloca) {
+                        throw std::runtime_error("Variable " + var_name + " is not an alloca");
+                    }
+                    
+                    llvm::Type* current_type = alloca->getAllocatedType();
+                    if (current_type != var_type) {
+                        llvm::AllocaInst* new_alloca = builder_->CreateAlloca(var_type, nullptr, var_name);
+                        llvm::Value* current_val = builder_->CreateLoad(current_type, var);
+                        llvm::Value* extended_val = builder_->CreateSExt(current_val, var_type);
+                        builder_->CreateStore(extended_val, new_alloca);
+                        named_values_[var_name] = new_alloca;
+                        variable_types_[var_name] = summit_type;
+                    }
+                    
+                    builder_->CreateStore(init_val, var);
+                } else {
+                    llvm::AllocaInst* alloca = builder_->CreateAlloca(var_type, nullptr, var_name);
+                    builder_->CreateStore(init_val, alloca);
+                    named_values_[var_name] = alloca;
+                    variable_types_[var_name] = summit_type;
+                }
+                loop_var_names.push_back(var_name);
+            } else {
+                codegen(*init_expr);
+            }
+        }
+    }
+    
+    builder_->CreateBr(cond_block);
+    
+    // generate condition block
+    builder_->SetInsertPoint(cond_block);
+    llvm::Value* cond_value = codegen(*stmt.condition);
+    
+    // convert condition to boolean if needed
+    if (!cond_value->getType()->isIntegerTy(1)) {
+        if (cond_value->getType()->isIntegerTy()) {
+            cond_value = builder_->CreateICmpNE(
+                cond_value,
+                llvm::ConstantInt::get(cond_value->getType(), 0),
+                "for_cond"
+            );
+        } else if (cond_value->getType()->isFloatingPointTy()) {
+            cond_value = builder_->CreateFCmpONE(
+                cond_value,
+                llvm::ConstantFP::get(cond_value->getType(), 0.0),
+                "for_cond"
+            );
+        }
+    }
+    
+    builder_->CreateCondBr(cond_value, body_block, end_block);
+
+    builder_->SetInsertPoint(body_block);
+    for (const auto& s : stmt.body) {
+        codegen(*s);
+    }
+
+    if (!builder_->GetInsertBlock()->getTerminator()) {
+        builder_->CreateBr(update_block);
+    }
+    
+    // generate update block, execute all update expressions
+    builder_->SetInsertPoint(update_block);
+    
+    bool using_simplified_step = false;
+    
+    if (stmt.update_exprs.size() == loop_var_names.size() && !loop_var_names.empty()) {
+        using_simplified_step = true;
+        for (const auto& update_expr : stmt.update_exprs) {
+            if (!dynamic_cast<const NumberLiteral*>(update_expr.get())) {
+                using_simplified_step = false;
+                break;
+            }
+        }
+    }
+    
+    if (using_simplified_step) {
+        // handle simplified step syntax
+        for (size_t i = 0; i < stmt.update_exprs.size() && i < loop_var_names.size(); i++) {
+            const std::string& loop_var = loop_var_names[i];
+            auto& update_expr = stmt.update_exprs[i];
+            
+            llvm::Value* var = named_values_[loop_var];
+            if (var) {
+                // load current value
+                llvm::Value* current_val = builder_->CreateLoad(getLLVMType(Type::i64()), var);
+                // create step value
+                llvm::Value* step_val = codegen(*update_expr);
+                
+                // check if step is negative and use subtraction instead of addition
+                if (auto* num_lit = dynamic_cast<const NumberLiteral*>(update_expr.get())) {
+                    if (num_lit->isRegularInteger() && num_lit->getIntValue() < 0) {
+                        llvm::Value* new_val = builder_->CreateAdd(current_val, step_val);
+                        builder_->CreateStore(new_val, var);
+                    } else if (num_lit->isFloat() && num_lit->getFloatValue() < 0) {
+                        llvm::Value* new_val = builder_->CreateFAdd(current_val, step_val);
+                        builder_->CreateStore(new_val, var);
+                    } else {
+                        // For positive steps, use addition as before
+                        llvm::Value* new_val = builder_->CreateAdd(current_val, step_val);
+                        builder_->CreateStore(new_val, var);
+                    }
+                } else {
+                    llvm::Value* new_val = builder_->CreateAdd(current_val, step_val);
+                    builder_->CreateStore(new_val, var);
+                }
+            }
+        }
+    } else {
+        if (stmt.update_exprs.size() == 1) {
+            auto& update_expr = stmt.update_exprs[0];
+            
+            if (auto* num_lit = dynamic_cast<const NumberLiteral*>(update_expr.get())) {
+                if (stmt.init_exprs.size() == 1) {
+                    if (auto* assign = dynamic_cast<const AssignmentExpr*>(stmt.init_exprs[0].get())) {
+                        std::string loop_var = assign->name;
+                        llvm::Value* var = named_values_[loop_var];
+                        if (var) {
+                            // load current value
+                            llvm::Value* current_val = builder_->CreateLoad(getLLVMType(Type::i64()), var);
+                            // create step value
+                            llvm::Value* step_val = codegen(*update_expr);
+                            
+                            // handle negative steps for single variable case too
+                            if (num_lit->isRegularInteger() && num_lit->getIntValue() < 0) {
+                                llvm::Value* abs_step_val = builder_->CreateNeg(step_val, "neg_step");
+                                llvm::Value* new_val = builder_->CreateSub(current_val, abs_step_val);
+                                builder_->CreateStore(new_val, var);
+                            } else if (num_lit->isFloat() && num_lit->getFloatValue() < 0) {
+                                llvm::Value* abs_step_val = builder_->CreateFNeg(step_val, "fneg_step");
+                                llvm::Value* new_val = builder_->CreateFSub(current_val, abs_step_val);
+                                builder_->CreateStore(new_val, var);
+                            } else {
+                                llvm::Value* new_val = builder_->CreateAdd(current_val, step_val);
+                                builder_->CreateStore(new_val, var);
+                            }
+                        }
+                    }
+                }
+            } else if (auto* binop = dynamic_cast<const BinaryOp*>(update_expr.get())) {
+                codegen(*update_expr);
+            } else if (auto* assign = dynamic_cast<const AssignmentExpr*>(update_expr.get())) {
+                codegen(*update_expr);
+            } else {
+                codegen(*update_expr);
+            }
+        } else {
+            for (const auto& update_expr : stmt.update_exprs) {
+                if (auto* assign = dynamic_cast<const AssignmentExpr*>(update_expr.get())) {
+                    std::string var_name = assign->name;
+                    llvm::Value* update_val = codegen(*assign->value);
+                    
+                    // i64 for for loop variables
+                    Type summit_type = Type::i64();
+                    llvm::Type* var_type = getLLVMType(summit_type);
+                    
+                    if (update_val->getType() != var_type) {
+                        update_val = castValue(update_val, var_type, summit_type);
+                    }
+                    
+                    auto existing_var = named_values_.find(var_name);
+                    if (existing_var != named_values_.end()) {
+                        llvm::Value* var = existing_var->second;
+                        auto* alloca = llvm::dyn_cast<llvm::AllocaInst>(var);
+                        if (!alloca) {
+                            throw std::runtime_error("Variable " + var_name + " is not an alloca");
+                        }
+                        
+                        llvm::Type* current_type = alloca->getAllocatedType();
+                        if (current_type != var_type) {
+                            llvm::AllocaInst* new_alloca = builder_->CreateAlloca(var_type, nullptr, var_name);
+                            llvm::Value* current_val = builder_->CreateLoad(current_type, var);
+                            llvm::Value* extended_val = builder_->CreateSExt(current_val, var_type);
+                            builder_->CreateStore(extended_val, new_alloca);
+                            named_values_[var_name] = new_alloca;
+                            variable_types_[var_name] = summit_type;
+                        }
+                        
+                        builder_->CreateStore(update_val, var);
+                    } else {
+                        llvm::AllocaInst* alloca = builder_->CreateAlloca(var_type, nullptr, var_name);
+                        builder_->CreateStore(update_val, alloca);
+                        named_values_[var_name] = alloca;
+                        variable_types_[var_name] = summit_type;
+                    }
+                } else if (auto* var_decl = dynamic_cast<const VarDecl*>(update_expr.get())) {
+                    codegen(*var_decl);
+                } else {
+                    codegen(*update_expr);
+                }
+            }
+        }
+    }
+    
+    builder_->CreateBr(cond_block);
+    
+    // continue from end block
+    builder_->SetInsertPoint(end_block);
+    
+    // restore variable scope
+    named_values_ = saved_named_values;
+    variable_types_ = saved_variable_types;
 }
 
 llvm::Value* CodeGenerator::codegenCast(const CastExpr& expr) {
@@ -1519,6 +1776,7 @@ void CodeGenerator::codegenChanceStmt(const ChanceStmt& stmt) {
     
     builder_->SetInsertPoint(merge_block);
 }
+
 void CodeGenerator::codegenIfStmt(const IfStmt& stmt) {
     llvm::Function* function = builder_->GetInsertBlock()->getParent();
     
@@ -1624,7 +1882,7 @@ void CodeGenerator::codegenIfStmt(const IfStmt& stmt) {
         for (const auto& s : stmt.else_branch) {
             codegen(*s);
         }
-        // Only add branch if block doesn't already have a terminator
+        // only add branch if block doesn't already have a terminator
         if (!builder_->GetInsertBlock()->getTerminator()) {
             builder_->CreateBr(merge_block);
         }
@@ -2239,11 +2497,12 @@ void CodeGenerator::codegen(const Statement& stmt) {
         codegenChanceStmt(*s);
     } else if (auto* s = dynamic_cast<const DoStmt*>(&stmt)) {
         codegenDoStmt(*s);
+    } else if (auto* s = dynamic_cast<const ForStmt*>(&stmt)) {
+        codegenForStmt(*s);
     } else {
         throw std::runtime_error("Unknown statement type");
     }
 }
-
 void CodeGenerator::importAllFunctionsFromModule(const std::string& module_path) {
     // import everything from a module, used for "using" statements
     for (const auto& [full_path, spec] : STDLIB_REGISTRY) {
@@ -2457,7 +2716,8 @@ void CodeGenerator::codegenVarDecl(const VarDecl& stmt) {
         if (summit_type.kind == Type::Kind::U64 && init_val->getType()->isIntegerTy(64)) {
             if (llvm::ConstantInt* const_int = llvm::dyn_cast<llvm::ConstantInt>(init_val)) {
                 uint64_t unsigned_value = const_int->getZExtValue();
-                init_val = llvm::ConstantInt::get(*context_, llvm::APInt(64, unsigned_value, false));
+                init_val = llvm::ConstantInt::get(*context_, 
+                    llvm::APInt(64, unsigned_value, false));
             }
         }
         
@@ -2498,12 +2758,31 @@ void CodeGenerator::codegenVarDecl(const VarDecl& stmt) {
                     throw std::runtime_error("Integer too large for u64: " + largeInt);
                 }
             } else {
-                var_type = init_val->getType();
-                summit_type = getSummitTypeFromLLVMType(var_type);
+                // FORCE i64 for integer variables to prevent overflow
+                summit_type = Type::i64();
+                var_type = getLLVMType(summit_type);
+                
+                // Cast the initial value to i64
+                if (init_val->getType() != var_type) {
+                    init_val = castValue(init_val, var_type, summit_type);
+                }
             }
         } else {
+            // For non-number literals, use the inferred type but promote integers to i64
             var_type = init_val->getType();
             summit_type = getSummitTypeFromLLVMType(var_type);
+            
+            // If it's a small integer type, promote to i64
+            if (summit_type.kind == Type::Kind::I8 || 
+                summit_type.kind == Type::Kind::I16 || 
+                summit_type.kind == Type::Kind::I32 ||
+                summit_type.kind == Type::Kind::U8 ||
+                summit_type.kind == Type::Kind::U16 ||
+                summit_type.kind == Type::Kind::U32) {
+                summit_type = Type::i64();
+                var_type = getLLVMType(summit_type);
+                init_val = castValue(init_val, var_type, summit_type);
+            }
         }
     }
     

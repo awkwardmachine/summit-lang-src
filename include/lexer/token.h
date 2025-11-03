@@ -9,7 +9,7 @@ enum class TokenType {
     // Keywords
     FIXED, VAR, FUNC, RET, END, IF, THEN, ELIF,
     ELSE, WHILE, FOR, FROM, USING, AS, DO, CHANCE, MATCH,
-    MAYBE,
+    MAYBE, STEP, TO,
     
     // Type keywords
     I8, I16, I32, I64,
@@ -22,7 +22,7 @@ enum class TokenType {
     ASSIGN, PLUS, MINUS, STAR, SLASH, LPAREN, RPAREN,
     LBRACE, RBRACE, COLON, DOT, COMMA, AT, GREATER, LESS, 
     LESS_EQUAL, GREATER_EQUAL, NOT_EQUAL, EQUAL, ARROW, 
-    RIGHT_SHIFT, PERCENT,
+    RIGHT_SHIFT, PERCENT, SEMICOLON,
     
     // Literals
     IDENTIFIER, STRING, NUMBER,
@@ -78,6 +78,22 @@ struct Token {
     
     const std::string& getLargeIntValue() const {
         return std::get<std::string>(literal);
+    }
+
+    std::string toString() const {
+        std::string result = "Token{type: " + std::to_string(static_cast<int>(type)) +
+                           ", lexeme: '" + lexeme + "'";
+        
+        if (std::holds_alternative<int64_t>(literal)) {
+            result += ", literal: " + std::to_string(std::get<int64_t>(literal));
+        } else if (std::holds_alternative<double>(literal)) {
+            result += ", literal: " + std::to_string(std::get<double>(literal));
+        } else if (std::holds_alternative<std::string>(literal)) {
+            result += ", literal: \"" + std::get<std::string>(literal) + "\"";
+        }
+        
+        result += ", line: " + std::to_string(line) + "}";
+        return result;
     }
 };
 

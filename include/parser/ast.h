@@ -305,20 +305,25 @@ struct CastExpr : Expression {
 // import expressions
 struct ImportExpr : Expression {
     std::string module;
-    explicit ImportExpr(std::string mod) : module(std::move(mod)) {}
-    
+    bool is_file_import;
+
+    explicit ImportExpr(std::string mod, bool file_import = false) 
+        : module(std::move(mod)), is_file_import(file_import) {}
+
     std::string toString(int indent = 0) const override {
         return getIndent(indent) + "ImportExpr(\"" + module + "\")";
     }
 };
 
+
 struct NamedImportExpr : public Expression {
     std::string module;
     std::vector<std::string> imports;
-    
-    NamedImportExpr(std::string mod, std::vector<std::string> imp)
-        : module(std::move(mod)), imports(std::move(imp)) {}
-    
+    bool is_file_import;
+
+    NamedImportExpr(std::string mod, std::vector<std::string> imp, bool file_import = false)
+        : module(std::move(mod)), imports(std::move(imp)), is_file_import(file_import) {}
+
     std::string toString(int indent = 0) const override {
         std::string result = getIndent(indent) + "NamedImportExpr\n";
         result += getIndent(indent + 1) + "module: \"" + module + "\"\n";
@@ -327,10 +332,12 @@ struct NamedImportExpr : public Expression {
             if (i > 0) result += ", ";
             result += imports[i];
         }
-        result += "]";
+        result += "]\n";
+        result += getIndent(indent + 1) + "is_file_import: " + (is_file_import ? "true" : "false");
         return result;
     }
 };
+
 
 struct NilLiteral : Expression {
     NilLiteral() = default;
@@ -421,22 +428,26 @@ struct FunctionDecl : Statement {
     std::vector<std::unique_ptr<Statement>> body;
     std::optional<Type> return_type;
     std::vector<Type> parameter_types;
-    
+    bool is_global;
+
     FunctionDecl(std::string name, 
                  std::vector<std::string> parameters, 
                  std::vector<std::unique_ptr<Statement>> body,
                  std::optional<Type> return_type = std::nullopt,
-                 std::vector<Type> param_types = {})
+                 std::vector<Type> param_types = {},
+                 bool global = false)
         : name(std::move(name)), 
           parameters(std::move(parameters)), 
           body(std::move(body)),
           return_type(return_type),
-          parameter_types(std::move(param_types)) {}
-    
+          parameter_types(std::move(param_types)),
+          is_global(global) {}
+
     std::string toString(int indent = 0) const override {
         std::string result = getIndent(indent) + "FunctionDecl\n";
         result += getIndent(indent + 1) + "name: " + name;
-        
+        result += "\n" + getIndent(indent + 1) + "is_global: " + (is_global ? "true" : "false");
+
         if (!parameters.empty()) {
             result += "\n" + getIndent(indent + 1) + "parameters: [";
             for (size_t i = 0; i < parameters.size(); i++) {
@@ -448,21 +459,22 @@ struct FunctionDecl : Statement {
             }
             result += "]";
         }
-        
+
         if (return_type.has_value()) {
             result += "\n" + getIndent(indent + 1) + "return_type: " + return_type->toString();
         }
-        
+
         if (!body.empty()) {
             result += "\n" + getIndent(indent + 1) + "body:";
             for (const auto& stmt : body) {
                 result += "\n" + stmt->toString(indent + 2);
             }
         }
-        
+
         return result;
     }
 };
+
 
 struct ReturnStmt : Statement {
     std::unique_ptr<Expression> value;

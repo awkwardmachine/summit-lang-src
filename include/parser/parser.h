@@ -20,6 +20,7 @@ private:
     std::optional<Type> current_function_return_type_;
     bool parsing_for_update_ = false;
     bool in_for_loop_init_or_update_ = false;
+    bool in_function_args_ = false;
     
     // type inference and analysis
     std::optional<Type> inferExpressionType(const Expression* expr);

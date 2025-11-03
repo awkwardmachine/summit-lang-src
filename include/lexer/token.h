@@ -9,7 +9,7 @@ enum class TokenType {
     // Keywords
     FIXED, VAR, FUNC, RET, END, IF, THEN, ELIF,
     ELSE, WHILE, FOR, FROM, USING, AS, DO, CHANCE, MATCH,
-    MAYBE, STEP, TO,
+    MAYBE, STEP, TO, GLOBAL,
     
     // Type keywords
     I8, I16, I32, I64,

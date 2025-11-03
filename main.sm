@@ -1,0 +1,8 @@
+fixed io = @import("std").io
+fixed math = @import("math.sm")
+
+func main() -> i32 do
+    var result = math.add(3, 3)
+    io.println(result)
+    ret 0
+end

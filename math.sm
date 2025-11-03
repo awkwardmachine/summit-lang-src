@@ -1,0 +1,7 @@
+global func add(a, b) do
+    ret a + b
+end
+
+global func sub(a, b) do
+    ret a - b
+end

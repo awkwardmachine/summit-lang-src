@@ -19,6 +19,8 @@
 #include <filesystem>
 
 #include "codegen/codegen.h"
+#include "lexer/lexer.h"
+#include "parser/parser.h"
 
 namespace Summit {
 
@@ -1010,6 +1012,44 @@ llvm::Value* CodeGenerator::codegenNilLiteral(const NilLiteral& expr) {
 }
 
 llvm::Value* CodeGenerator::codegenMemberAccess(const MemberAccess& expr) {
+    // check if the object is a file import
+    if (auto* import_expr = dynamic_cast<const ImportExpr*>(expr.object.get())) {
+        if (import_expr->is_file_import) {
+            // this is accessing a member of an imported file
+            std::string module_name = std::filesystem::path(import_expr->module).stem().string();
+            
+            // look up the function with mangled name
+            std::string mangled_name = module_name + "_" + expr.member;
+            llvm::Function* func = module_->getFunction(mangled_name);
+            
+            if (!func) {
+                throw std::runtime_error("Function '" + expr.member + 
+                                       "' not found in imported file '" + 
+                                       import_expr->module + "'");
+            }
+            
+            // return the function pointer
+            return func;
+        }
+    }
+    
+    if (auto* id = dynamic_cast<const Identifier*>(expr.object.get())) {
+        auto file_alias_it = file_import_aliases_.find(id->name);
+        if (file_alias_it != file_import_aliases_.end()) {
+            std::string module_name = file_alias_it->second;
+            std::string mangled_name = module_name + "_" + expr.member;
+            llvm::Function* func = module_->getFunction(mangled_name);
+            
+            if (!func) {
+                throw std::runtime_error("Function '" + expr.member + 
+                                       "' not found in imported file module '" + 
+                                       module_name + "'");
+            }
+            
+            return func;
+        }
+    }
+    
     return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0, true));
 }
 
@@ -1868,7 +1908,8 @@ void CodeGenerator::codegenIfStmt(const IfStmt& stmt) {
         for (const auto& s : elif_stmt->then_branch) {
             codegen(*s);
         }
-        // Only add branch if block doesn't already have a terminator
+
+        // only add branch if block doesn't already have a terminator
         if (!builder_->GetInsertBlock()->getTerminator()) {
             builder_->CreateBr(merge_block);
         }
@@ -1907,39 +1948,82 @@ llvm::Value* CodeGenerator::codegenFunctionCall(const FunctionCall& expr) {
     llvm::Function* callee = nullptr;
     std::string func_name;
 
-    std::string full_path = extractFunctionPath(expr.callee.get());
-    
-    if (!full_path.empty()) {
-        func_name = full_path;
-        callee = getOrDeclareStdlibFunction(full_path);
+    // check if this is a call to an inline import
+    if (auto* member = dynamic_cast<const MemberAccess*>(expr.callee.get())) {
+        if (auto* import_expr = dynamic_cast<const ImportExpr*>(member->object.get())) {
+            if (import_expr->is_file_import) {
+                // compile the file if not already done
+                compileImportedFile(import_expr->module);
+                
+                // get the mangled function name
+                std::string module_name = std::filesystem::path(import_expr->module).stem().string();
+                std::string mangled_name = module_name + "_" + member->member;
+                
+                callee = module_->getFunction(mangled_name);
+                
+                if (!callee) {
+                    throw std::runtime_error("Function '" + member->member + 
+                                           "' not found in imported file '" + 
+                                           import_expr->module + "'");
+                }
+                
+                func_name = mangled_name;
+            }
+        }
+    }
 
-        // try resolving aliases if that didn't work
-        if (!callee) {
-            size_t first_dot = full_path.find('.');
-            if (first_dot != std::string::npos) {
-                std::string first_part = full_path.substr(0, first_dot);
-                auto alias_it = module_aliases_.find(first_part);
-                if (alias_it != module_aliases_.end()) {
-                    std::string resolved_path = alias_it->second + full_path.substr(first_dot);
-                    callee = getOrDeclareStdlibFunction(resolved_path);
+    // if not found through inline import, try standard resolution
+    if (!callee) {
+        if (auto* member = dynamic_cast<const MemberAccess*>(expr.callee.get())) {
+            if (auto* id = dynamic_cast<const Identifier*>(member->object.get())) {
+                auto file_alias_it = file_import_aliases_.find(id->name);
+                if (file_alias_it != file_import_aliases_.end()) {
+                    // this is a call to a function from an imported file
+                    std::string mangled_name = file_alias_it->second + "_" + member->member;
+                    callee = module_->getFunction(mangled_name);
+                    
                     if (callee) {
-                        func_name = resolved_path;
+                        func_name = mangled_name;
                     }
                 }
             }
         }
-    } 
-    else if (auto* id = dynamic_cast<const Identifier*>(expr.callee.get())) {
-        func_name = id->name;
+    }
+    
+    if (!callee) {
+        std::string full_path = extractFunctionPath(expr.callee.get());
         
-        auto func_ref_it = function_references_.find(func_name);
-        if (func_ref_it != function_references_.end()) {
-            callee = func_ref_it->second;
-            if (callee) {
-                func_name = callee->getName().str();
+        if (!full_path.empty()) {
+            func_name = full_path;
+            callee = getOrDeclareStdlibFunction(full_path);
+
+            if (!callee) {
+                size_t first_dot = full_path.find('.');
+                if (first_dot != std::string::npos) {
+                    std::string first_part = full_path.substr(0, first_dot);
+                    auto alias_it = module_aliases_.find(first_part);
+                    if (alias_it != module_aliases_.end()) {
+                        std::string resolved_path = alias_it->second + full_path.substr(first_dot);
+                        callee = getOrDeclareStdlibFunction(resolved_path);
+                        if (callee) {
+                            func_name = resolved_path;
+                        }
+                    }
+                }
             }
-        } else {
-            callee = getFunction(func_name);
+        } 
+        else if (auto* id = dynamic_cast<const Identifier*>(expr.callee.get())) {
+            func_name = id->name;
+            
+            auto func_ref_it = function_references_.find(func_name);
+            if (func_ref_it != function_references_.end()) {
+                callee = func_ref_it->second;
+                if (callee) {
+                    func_name = callee->getName().str();
+                }
+            } else {
+                callee = getFunction(func_name);
+            }
         }
     }
 
@@ -2146,26 +2230,78 @@ void CodeGenerator::generateRandomSeed() {
 
 // import statement codegen
 llvm::Value* CodeGenerator::codegenImport(const ImportExpr& expr) {
-    ensureModuleExists(expr.module);
-    return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0, true));
+    if (expr.is_file_import) {
+        // compile the imported file
+        compileImportedFile(expr.module);
+        
+        // get the module name
+        std::string module_name = std::filesystem::path(expr.module).stem().string();
+        file_import_aliases_[module_name] = module_name;
+        
+        // create a global constant that represents this module
+        std::string module_marker_name = "__module_marker_" + module_name;
+        llvm::GlobalVariable* module_marker = module_->getGlobalVariable(module_marker_name);
+        
+        if (!module_marker) {
+            module_marker = new llvm::GlobalVariable(
+                *module_,
+                llvm::Type::getInt8Ty(*context_),
+                true,  // is constant
+                llvm::GlobalValue::PrivateLinkage,
+                llvm::ConstantInt::get(llvm::Type::getInt8Ty(*context_), 0),
+                module_marker_name
+            );
+        }
+        
+        return module_marker;
+    } else {
+        // handle standard library imports
+        ensureModuleExists(expr.module);
+        return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0, true));
+    }
 }
 
 llvm::Value* CodeGenerator::codegenNamedImport(const NamedImportExpr& expr) {
-    ensureModuleExists(expr.module);
-
-    for (const auto& import_name : expr.imports) {
-        std::string full_path = expr.module + "." + import_name;
-        llvm::Function* func = getOrDeclareStdlibFunction(full_path);
+    if (expr.is_file_import) {
+        // compile the imported file
+        compileImportedFile(expr.module);
         
-        if (func) {
-            function_references_[import_name] = func;
-        } else {
-            std::cerr << "Warning: Function '" << import_name << "' not found in module '" 
-                      << expr.module << "'" << std::endl;
+        // get the module name
+        std::string module_name = std::filesystem::path(expr.module).stem().string();
+        
+        // import specific functions
+        for (const auto& import_name : expr.imports) {
+            std::string mangled_name = module_name + "_" + import_name;
+            llvm::Function* func = module_->getFunction(mangled_name);
+            
+            if (func) {
+                function_references_[import_name] = func;
+                functions_[import_name] = func;
+            } else {
+                std::cerr << "Warning: Function '" << import_name 
+                         << "' not found in file '" << expr.module << "'" << std::endl;
+            }
         }
+        
+        return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0, true));
+    } else {
+        // handle standard library imports
+        ensureModuleExists(expr.module);
+        
+        for (const auto& import_name : expr.imports) {
+            std::string full_path = expr.module + "." + import_name;
+            llvm::Function* func = getOrDeclareStdlibFunction(full_path);
+            
+            if (func) {
+                function_references_[import_name] = func;
+            } else {
+                std::cerr << "Warning: Function '" << import_name 
+                         << "' not found in module '" << expr.module << "'" << std::endl;
+            }
+        }
+        
+        return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0, true));
     }
-    
-    return llvm::ConstantInt::get(*context_, llvm::APInt(64, 0, true));
 }
 
 // variable assignment and type promotion
@@ -2519,12 +2655,56 @@ void CodeGenerator::importAllFunctionsFromModule(const std::string& module_path)
 
 void CodeGenerator::codegenUsingImportStmt(const UsingImportStmt& stmt) {
     if (auto* import_expr = dynamic_cast<const ImportExpr*>(stmt.import_expr.get())) {
+        if (import_expr->is_file_import) {
+            // compile the imported file
+            compileImportedFile(import_expr->module);
+            
+            // get the module name
+            std::string module_name = std::filesystem::path(import_expr->module).stem().string();
+            
+            // import all functions from this file into the global scope
+            for (auto& func : *module_) {
+                std::string func_name = func.getName().str();
+                
+                std::string prefix = module_name + "_";
+                if (func_name.find(prefix) == 0) {
+                    std::string original_name = func_name.substr(prefix.length());
+                    function_references_[original_name] = &func;
+                }
+            }
+            
+            return;
+        }
+        
+        // standard library module import
         std::string module_path = import_expr->module;
         ensureModuleExists(module_path);
-
         importAllFunctionsFromModule(module_path);
         
     } else if (auto* named_import = dynamic_cast<const NamedImportExpr*>(stmt.import_expr.get())) {
+        if (named_import->is_file_import) {
+            // compile the imported file
+            compileImportedFile(named_import->module);
+            
+            std::string module_name = std::filesystem::path(named_import->module).stem().string();
+            
+            // Import only the specified functions
+            for (const auto& import_name : named_import->imports) {
+                std::string mangled_name = module_name + "_" + import_name;
+                llvm::Function* func = module_->getFunction(mangled_name);
+                
+                if (func) {
+                    function_references_[import_name] = func;
+                } else {
+                    std::cerr << "Warning: Function '" << import_name 
+                             << "' not found in file '" << named_import->module << "'" << std::endl;
+                }
+            }
+            
+            return;
+        }
+        
+        // standard library imports
         ensureModuleExists(named_import->module);
         
         for (const auto& import_name : named_import->imports) {
@@ -2534,8 +2714,8 @@ void CodeGenerator::codegenUsingImportStmt(const UsingImportStmt& stmt) {
             if (func) {
                 function_references_[import_name] = func;
             } else {
-                std::cerr << "Warning: Function '" << import_name << "' not found in module '" 
-                          << named_import->module << "'" << std::endl;
+                std::cerr << "Warning: Function '" << import_name 
+                         << "' not found in module '" << named_import->module << "'" << std::endl;
             }
         }
     } else if (auto* member_access = dynamic_cast<const MemberAccess*>(stmt.import_expr.get())) {
@@ -2570,12 +2750,25 @@ void CodeGenerator::codegenUsingStmt(const UsingStmt& stmt) {
         }
     }
 }
+
 void CodeGenerator::codegenVarDecl(const VarDecl& stmt) {
     // handle import statements disguised as var decls
     if (auto* import_expr = dynamic_cast<const ImportExpr*>(stmt.initializer.get())) {
-        ensureModuleExists(import_expr->module);
-        module_aliases_[stmt.name] = import_expr->module;
-        return;
+        if (import_expr->is_file_import) {
+            // Compile the imported file
+            compileImportedFile(import_expr->module);
+            
+            // Get the module name
+            std::string module_name = std::filesystem::path(import_expr->module).stem().string();
+            
+            // Create alias
+            file_import_aliases_[stmt.name] = module_name;
+            return;
+        } else {
+            ensureModuleExists(import_expr->module);
+            module_aliases_[stmt.name] = import_expr->module;
+            return;
+        }
     }
 
     if (auto* named_import = dynamic_cast<const NamedImportExpr*>(stmt.initializer.get())) {
@@ -2762,17 +2955,17 @@ void CodeGenerator::codegenVarDecl(const VarDecl& stmt) {
                 summit_type = Type::i64();
                 var_type = getLLVMType(summit_type);
                 
-                // Cast the initial value to i64
+                // cast the initial value to i64
                 if (init_val->getType() != var_type) {
                     init_val = castValue(init_val, var_type, summit_type);
                 }
             }
         } else {
-            // For non-number literals, use the inferred type but promote integers to i64
+            // for non number literals, use the inferred type but promote integers to i64
             var_type = init_val->getType();
             summit_type = getSummitTypeFromLLVMType(var_type);
             
-            // If it's a small integer type, promote to i64
+            // if it's a small integer type, promote to i64
             if (summit_type.kind == Type::Kind::I8 || 
                 summit_type.kind == Type::Kind::I16 || 
                 summit_type.kind == Type::Kind::I32 ||
@@ -3378,6 +3571,187 @@ void CodeGenerator::seedRandomGenerator() {
         module_.get()
     );
 }
+
+std::string CodeGenerator::resolveImportPath(const std::string& import_path) {
+    // if it's an absolute path, use it directly
+    if (std::filesystem::path(import_path).is_absolute()) {
+        if (std::filesystem::exists(import_path)) {
+            return std::filesystem::canonical(import_path).string();
+        }
+        throw std::runtime_error("Import file not found: " + import_path);
+    }
+    
+    // try relative to current source file
+    if (!current_source_file_.empty()) {
+        std::filesystem::path source_dir = std::filesystem::path(current_source_file_).parent_path();
+        std::filesystem::path relative_path = source_dir / import_path;
+        
+        if (std::filesystem::exists(relative_path)) {
+            return std::filesystem::canonical(relative_path).string();
+        }
+    }
+    
+    // try relative to current directory
+    if (std::filesystem::exists(import_path)) {
+        return std::filesystem::canonical(import_path).string();
+    }
+    
+    throw std::runtime_error("Import file not found: " + import_path);
+}
+
+void CodeGenerator::compileImportedFile(const std::string& file_path) {
+    std::string resolved_path = resolveImportPath(file_path);
+    
+    // check if already processed to avoid circular imports
+    if (processed_files_.find(resolved_path) != processed_files_.end()) {
+        return;
+    }
+    
+    processed_files_.insert(resolved_path);
+    
+    // read the file
+    std::ifstream file(resolved_path);
+    if (!file.is_open()) {
+        throw std::runtime_error("Failed to open import file: " + resolved_path);
+    }
+    
+    std::stringstream buffer;
+    buffer << file.rdbuf();
+    std::string source = buffer.str();
+    
+    // lex and parse the file
+    Summit::Lexer lexer(source);
+    auto tokens = lexer.tokenize();
+    
+    Summit::Parser parser(tokens);
+    auto program = parser.parse();
+    
+    // store the program
+    imported_programs_[resolved_path] = std::move(program);
+    
+    // extract the module name (filename without .sm extension)
+    std::string module_name = std::filesystem::path(resolved_path).stem().string();
+    
+    // generate code for global functions in this file
+    exportGlobalFunctions(*imported_programs_[resolved_path], module_name);
+}
+
+void CodeGenerator::exportGlobalFunctions(const Program& program, const std::string& module_prefix) {
+    llvm::BasicBlock* saved_insert_block = builder_->GetInsertBlock();
+    
+    // process all statements in the imported file
+    for (const auto& stmt : program.statements) {
+        if (auto* func_decl = dynamic_cast<const FunctionDecl*>(stmt.get())) {
+            if (func_decl->is_global) {
+                // generate the function with prefixed name to avoid conflicts
+                std::string mangled_name = module_prefix + "_" + func_decl->name;
+                
+                // build function type
+                llvm::Type* return_type;
+                Type return_summit_type;
+                if (func_decl->return_type.has_value() && 
+                    func_decl->return_type.value().kind != Type::Kind::INFERRED) {
+                    return_type = getLLVMType(func_decl->return_type.value());
+                    return_summit_type = func_decl->return_type.value();
+                } else {
+                    return_type = getInt64Type();
+                    return_summit_type = Type::i64();
+                }
+                
+                std::vector<llvm::Type*> param_types;
+                for (const auto& param_type : func_decl->parameter_types) {
+                    if (param_type.kind == Type::Kind::INFERRED) {
+                        param_types.push_back(getInt64Type());
+                    } else {
+                        param_types.push_back(getLLVMType(param_type));
+                    }
+                }
+                
+                llvm::FunctionType* func_type = llvm::FunctionType::get(
+                    return_type, param_types, false
+                );
+                
+                llvm::Function* function = llvm::Function::Create(
+                    func_type,
+                    llvm::Function::ExternalLinkage,
+                    mangled_name,
+                    module_.get()
+                );
+                
+                // store in functions map with both names
+                functions_[mangled_name] = function;
+                functions_[func_decl->name] = function;
+                function_return_types_[mangled_name] = return_summit_type;
+                function_return_summit_types_[function] = return_summit_type;
+                
+                // generate function body
+                llvm::BasicBlock* entry = llvm::BasicBlock::Create(*context_, "entry", function);
+                builder_->SetInsertPoint(entry);
+                
+                // save variable scope
+                auto prev_named_values = named_values_;
+                auto prev_variable_types = variable_types_;
+                
+                // set up parameters
+                size_t idx = 0;
+                for (auto& arg : function->args()) {
+                    arg.setName(func_decl->parameters[idx]);
+                    
+                    llvm::Type* param_llvm_type = param_types[idx];
+                    llvm::AllocaInst* alloca = builder_->CreateAlloca(
+                        param_llvm_type, nullptr, func_decl->parameters[idx]
+                    );
+                    
+                    if (func_decl->parameter_types[idx].kind == Type::Kind::INFERRED) {
+                        variable_types_[func_decl->parameters[idx]] = Type::i64();
+                    } else {
+                        variable_types_[func_decl->parameters[idx]] = func_decl->parameter_types[idx];
+                    }
+                    
+                    builder_->CreateStore(&arg, alloca);
+                    named_values_[func_decl->parameters[idx]] = alloca;
+                    idx++;
+                }
+                
+                // generate function body
+                for (const auto& s : func_decl->body) {
+                    codegen(*s);
+                }
+                
+                // add default return if needed
+                if (!builder_->GetInsertBlock()->getTerminator()) {
+                    if (return_type->isVoidTy()) {
+                        builder_->CreateRetVoid();
+                    } else {
+                        llvm::Value* default_val;
+                        if (return_type->isIntegerTy()) {
+                            default_val = llvm::ConstantInt::get(return_type, 0);
+                        } else if (return_type->isFloatingPointTy()) {
+                            default_val = llvm::ConstantFP::get(return_type, 0.0);
+                        } else if (return_type->isPointerTy()) {
+                            default_val = llvm::ConstantPointerNull::get(
+                                llvm::cast<llvm::PointerType>(return_type)
+                            );
+                        } else {
+                            default_val = llvm::ConstantInt::get(getInt64Type(), 0);
+                        }
+                        builder_->CreateRet(default_val);
+                    }
+                }
+                
+                // restore variable scope
+                named_values_ = prev_named_values;
+                variable_types_ = prev_variable_types;
+            }
+        }
+    }
+    
+    // restore builder state
+    if (saved_insert_block) {
+        builder_->SetInsertPoint(saved_insert_block);
+    }
+}
+
 
 // helper getters for common llvm types
 llvm::Type* CodeGenerator::getInt64Type() {

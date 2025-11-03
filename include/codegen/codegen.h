@@ -9,6 +9,7 @@
 #include <unordered_map>
 #include <string>
 #include <unordered_set>
+#include <set>
 
 #include "parser/ast.h"
 
@@ -25,7 +26,10 @@ public:
                    const std::vector<std::string>& libs,
                    bool no_stdlib = false,
                    bool nowindow = true);
-    
+
+    void setSourceFile(const std::string& file_path) { 
+        current_source_file_ = file_path; 
+    }
 private:
     // llvm infrastructure
     std::unique_ptr<llvm::LLVMContext> context_;
@@ -52,6 +56,11 @@ private:
     std::unordered_map<std::string, Type> function_return_types_;
     std::unordered_map<llvm::Function*, Type> function_return_summit_types_;
     std::unordered_set<std::string> inferred_unsigned_functions_;
+
+    std::unordered_map<std::string, std::unique_ptr<Program>> imported_programs_;
+    std::unordered_map<std::string, std::string> file_import_aliases_;
+    std::set<std::string> processed_files_;
+    std::string current_source_file_;
 
     // current compilation context
     llvm::Function* current_function_ = nullptr;
@@ -133,6 +142,10 @@ private:
     // string concat helpers
     llvm::Value* concatenateStrings(llvm::Value* left, llvm::Value* right, bool add_space);
     llvm::Value* convertToString(llvm::Value* value, const Expression* expr);
+
+    std::string resolveImportPath(const std::string& import_path);
+    void compileImportedFile(const std::string& file_path);
+    void exportGlobalFunctions(const Program& program, const std::string& module_prefix);
 };
 
 }
